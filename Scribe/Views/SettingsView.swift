@@ -802,6 +802,7 @@ struct HotkeySettingsView: View {
     @Environment(HotkeyService.self) private var hotkeyService
 
     @State private var isRecordingHotkey = false
+    @State private var eventMonitor: Any?
 
     var body: some View {
         Form {
@@ -839,45 +840,76 @@ struct HotkeySettingsView: View {
                 }
             }
 
-            Section("Preset Hotkeys") {
-                ForEach(presetHotkeys, id: \.self) { hotkey in
-                    Button {
-                        settings.hotkeyString = hotkey
-                        hotkeyService.registerHotkey(from: hotkey)
-                    } label: {
-                        HStack {
-                            Text(hotkey)
-                                .font(.system(.body, design: .monospaced))
-
-                            Spacer()
-
-                            if settings.hotkeyString == hotkey {
-                                Image(systemName: "checkmark")
-                                    .foregroundStyle(.blue)
-                            }
-                        }
-                    }
-                    .buttonStyle(.plain)
-                }
-            }
-
             Section {
-                Text("The hotkey works globally, even when other apps are focused.")
+                Text("Press a key combination with at least one modifier (⌃, ⌥, or ⌘) to set a global hotkey.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
         }
         .formStyle(.grouped)
+        .onChange(of: isRecordingHotkey) { _, recording in
+            if recording {
+                startMonitoring()
+            } else {
+                stopMonitoring()
+            }
+        }
+        .onDisappear {
+            stopMonitoring()
+            isRecordingHotkey = false
+        }
     }
 
-    private var presetHotkeys: [String] {
-        [
-            "⌃⌥⌘C",
-            "⌃⌥⌘R",
-            "⌃⌥⌘T",
-            "⌃⌥⌘M",
-            "⌃⇧⌘R"
+    private func startMonitoring() {
+        stopMonitoring()
+
+        eventMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+            // Escape cancels recording
+            if event.keyCode == 53 {
+                isRecordingHotkey = false
+                return nil
+            }
+
+            let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+            let hasModifier = flags.contains(.control) || flags.contains(.option) || flags.contains(.command)
+
+            guard hasModifier else { return nil }
+
+            guard let char = characterForKeyCode(event.keyCode) else { return nil }
+
+            var parts = ""
+            if flags.contains(.control) { parts += "⌃" }
+            if flags.contains(.option) { parts += "⌥" }
+            if flags.contains(.shift) { parts += "⇧" }
+            if flags.contains(.command) { parts += "⌘" }
+            parts += String(char).uppercased()
+
+            settings.hotkeyString = parts
+            hotkeyService.registerHotkey(from: parts)
+            isRecordingHotkey = false
+
+            return nil
+        }
+    }
+
+    private func stopMonitoring() {
+        if let monitor = eventMonitor {
+            NSEvent.removeMonitor(monitor)
+            eventMonitor = nil
+        }
+    }
+
+    private func characterForKeyCode(_ keyCode: UInt16) -> Character? {
+        let map: [UInt16: Character] = [
+            0: "a", 1: "s", 2: "d", 3: "f", 4: "h", 5: "g", 6: "z", 7: "x",
+            8: "c", 9: "v", 11: "b", 12: "q", 13: "w", 14: "e", 15: "r",
+            16: "y", 17: "t", 18: "1", 19: "2", 20: "3", 21: "4", 22: "6",
+            23: "5", 24: "=", 25: "9", 26: "7", 27: "-", 28: "8", 29: "0",
+            30: "]", 31: "o", 32: "u", 33: "[", 34: "i", 35: "p", 37: "l",
+            38: "j", 39: "'", 40: "k", 41: ";", 42: "\\", 43: ",", 44: "/",
+            45: "n", 46: "m", 47: ".", 49: " "
         ]
+        return map[keyCode]
     }
 }
 #endif
