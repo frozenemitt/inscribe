@@ -3,6 +3,7 @@ import FoundationModels
 
 /// A helper class for working with Foundation Models framework
 /// Provides convenient methods for text generation, structured output, and session management
+@MainActor
 class FoundationModelsHelper {
 
     // MARK: - Session Management
@@ -175,6 +176,7 @@ class FoundationModelsHelper {
 enum FoundationModelsError: LocalizedError {
     case contextWindowExceeded
     case unsupportedLanguage
+    case noContent
     case generationFailed(any Error)
 
     var errorDescription: String? {
@@ -183,6 +185,8 @@ enum FoundationModelsError: LocalizedError {
             return "The conversation has become too long. Please start a new session."
         case .unsupportedLanguage:
             return "The current language or locale is not supported by Foundation Models."
+        case .noContent:
+            return "No content available to enhance. Please record or add some text first."
         case .generationFailed(let error):
             return "Failed to generate content: \(error.localizedDescription)"
         }
@@ -192,6 +196,7 @@ enum FoundationModelsError: LocalizedError {
 // MARK: - Session State Manager
 
 /// Helper class for managing multiple sessions and their state
+@MainActor
 class FoundationModelsSessionManager {
     private var sessions: [String: LanguageModelSession] = [:]
 
