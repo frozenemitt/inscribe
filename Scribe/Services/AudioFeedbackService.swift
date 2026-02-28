@@ -165,6 +165,22 @@ final class NotificationService {
         guard settings.showNotifications else { return }
         showTranscriptionComplete(characterCount: characterCount)
     }
+
+    /// Show a notification when AI processing failed but raw transcription was preserved
+    func showAIProcessingFailed(characterCount: Int, errorDetail: String) {
+        let content = UNMutableNotificationContent()
+        content.title = "AI Processing Failed"
+        content.body = "\(characterCount) characters copied to clipboard without AI processing. \(errorDetail)"
+        content.sound = .default
+
+        let request = UNNotificationRequest(
+            identifier: UUID().uuidString,
+            content: content,
+            trigger: nil
+        )
+
+        UNUserNotificationCenter.current().add(request)
+    }
 }
 
 // Required import for notifications
