@@ -184,6 +184,9 @@ final class AIProcessor {
         } catch FoundationModelsError.unsupportedLanguage {
             lastError = .languageNotSupported
             throw AIProcessorError.languageNotSupported
+        } catch FoundationModelsError.guardrailViolation {
+            lastError = .guardrailViolation
+            throw AIProcessorError.guardrailViolation
         } catch {
             lastError = .processingFailed(error.localizedDescription)
             throw AIProcessorError.processingFailed(error.localizedDescription)
@@ -249,6 +252,7 @@ enum AIProcessorError: Error, LocalizedError {
     case alreadyProcessing
     case languageNotSupported
     case contextWindowExceeded
+    case guardrailViolation
     case processingFailed(String)
 
     var errorDescription: String? {
@@ -263,6 +267,8 @@ enum AIProcessorError: Error, LocalizedError {
             return "The current language is not supported for AI processing"
         case .contextWindowExceeded:
             return "The text is too long to process"
+        case .guardrailViolation:
+            return "The on-device model refused to process this content due to Apple's safety restrictions. Your original transcription is preserved — try the Raw (No Processing) prompt instead."
         case .processingFailed(let reason):
             return "Processing failed: \(reason)"
         }
