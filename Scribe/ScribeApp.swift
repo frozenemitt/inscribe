@@ -154,39 +154,58 @@ struct ScribeApp: App {
         // Play stop sound
         AudioFeedbackService.shared.playIfEnabled(.recordingStopped, settings: settings)
 
+        // Stop recording and get raw transcript
+        let transcript: String
         do {
-            let transcript = try await transcriptionEngine.stopRecording()
+            transcript = try await transcriptionEngine.stopRecording()
+        } catch {
+            AudioFeedbackService.shared.playIfEnabled(.error, settings: settings)
+            NotificationService.shared.showError(error.localizedDescription)
+            print("[ScribeApp] Error stopping recording: \(error)")
+            return
+        }
 
-            guard !transcript.isEmpty else {
-                print("[ScribeApp] No transcript to process")
-                return
-            }
+        guard !transcript.isEmpty else {
+            print("[ScribeApp] No transcript to process")
+            return
+        }
 
-            var finalText = transcript
-            if settings.aiEnabled {
+        // Apply AI processing if enabled, falling back to raw transcript on failure
+        var finalText = transcript
+        if settings.aiEnabled {
+            do {
                 finalText = try await aiProcessor.process(
                     text: transcript,
                     promptId: settings.selectedPromptId
                 )
+            } catch {
+                print("[ScribeApp] AI processing failed, falling back to raw transcript: \(error)")
+
+                if settings.copyToClipboardAutomatically {
+                    ClipboardService.copy(transcript)
+                }
+
+                AudioFeedbackService.shared.playIfEnabled(.processingComplete, settings: settings)
+                NotificationService.shared.showAIProcessingFailed(
+                    characterCount: transcript.count,
+                    errorDetail: error.localizedDescription
+                )
+                return
             }
-
-            if settings.copyToClipboardAutomatically {
-                ClipboardService.copy(finalText)
-            }
-
-            // Play completion sound and show notification
-            AudioFeedbackService.shared.playIfEnabled(.processingComplete, settings: settings)
-            NotificationService.shared.showTranscriptionCompleteIfEnabled(
-                characterCount: finalText.count,
-                settings: settings
-            )
-
-            print("[ScribeApp] Transcription complete and copied to clipboard")
-        } catch {
-            AudioFeedbackService.shared.playIfEnabled(.error, settings: settings)
-            NotificationService.shared.showError(error.localizedDescription)
-            print("[ScribeApp] Error during stop/process: \(error)")
         }
+
+        if settings.copyToClipboardAutomatically {
+            ClipboardService.copy(finalText)
+        }
+
+        // Play completion sound and show notification
+        AudioFeedbackService.shared.playIfEnabled(.processingComplete, settings: settings)
+        NotificationService.shared.showTranscriptionCompleteIfEnabled(
+            characterCount: finalText.count,
+            settings: settings
+        )
+
+        print("[ScribeApp] Transcription complete and copied to clipboard")
     }
     #endif
 

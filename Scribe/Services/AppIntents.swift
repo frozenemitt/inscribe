@@ -81,15 +81,22 @@ struct QuickTranscribeIntent: AppIntent {
                 )
             }
 
-            // Apply AI processing if requested
+            // Apply AI processing if requested, falling back to raw transcript on failure
             var finalText = transcription
+            var aiProcessingFailed = false
             if let promptName = promptName, !promptName.isEmpty {
                 let promptConfig = PromptConfiguration()
                 let aiProcessor = AIProcessor(promptConfiguration: promptConfig)
 
                 // Find prompt by name
                 if let prompt = promptConfig.prompts.first(where: { $0.name.lowercased() == promptName.lowercased() }) {
-                    finalText = try await aiProcessor.process(text: transcription, promptId: prompt.id)
+                    do {
+                        finalText = try await aiProcessor.process(text: transcription, promptId: prompt.id)
+                    } catch {
+                        print("[QuickTranscribeIntent] AI processing failed, using raw transcript: \(error)")
+                        finalText = transcription
+                        aiProcessingFailed = true
+                    }
                 }
             }
 
@@ -104,14 +111,28 @@ struct QuickTranscribeIntent: AppIntent {
             #endif
 
             AudioFeedbackService.shared.playIfEnabled(.processingComplete, settings: settings)
-            NotificationService.shared.showTranscriptionCompleteIfEnabled(
-                characterCount: finalText.count,
-                settings: settings
-            )
 
-            let dialog = copyToClipboard
-                ? "Transcription complete and copied to clipboard."
-                : "Transcription complete."
+            if aiProcessingFailed {
+                NotificationService.shared.showAIProcessingFailed(
+                    characterCount: finalText.count,
+                    errorDetail: "Raw transcription was used instead."
+                )
+            } else {
+                NotificationService.shared.showTranscriptionCompleteIfEnabled(
+                    characterCount: finalText.count,
+                    settings: settings
+                )
+            }
+
+            let dialog = if aiProcessingFailed {
+                copyToClipboard
+                    ? "AI processing failed. Raw transcription copied to clipboard."
+                    : "AI processing failed. Raw transcription returned."
+            } else {
+                copyToClipboard
+                    ? "Transcription complete and copied to clipboard."
+                    : "Transcription complete."
+            }
 
             return .result(
                 value: finalText,
@@ -178,22 +199,35 @@ struct RecordTranscriptionIntent: AppIntent {
 
             var finalText = transcription
             var dialogPrefix = "Transcription"
+            var aiProcessingFailed = false
 
             if processWithAI, let action = aiAction {
                 let promptConfig = PromptConfiguration()
                 let aiProcessor = AIProcessor(promptConfiguration: promptConfig)
 
-                finalText = try await aiProcessor.quickProcess(text: transcription, action: action.toQuickAction)
-                dialogPrefix = action.rawValue
+                do {
+                    finalText = try await aiProcessor.quickProcess(text: transcription, action: action.toQuickAction)
+                    dialogPrefix = action.rawValue
+                } catch {
+                    print("[RecordTranscriptionIntent] AI processing failed, using raw transcript: \(error)")
+                    finalText = transcription
+                    aiProcessingFailed = true
+                }
             }
 
             if copyToClipboard {
                 ClipboardService.copy(finalText)
             }
 
-            let dialog = copyToClipboard
-                ? "\(dialogPrefix) complete and copied to clipboard."
-                : "\(dialogPrefix) complete."
+            let dialog = if aiProcessingFailed {
+                copyToClipboard
+                    ? "AI processing failed. Raw transcription copied to clipboard."
+                    : "AI processing failed. Raw transcription returned."
+            } else {
+                copyToClipboard
+                    ? "\(dialogPrefix) complete and copied to clipboard."
+                    : "\(dialogPrefix) complete."
+            }
 
             return .result(value: finalText, dialog: IntentDialog(stringLiteral: dialog))
 
