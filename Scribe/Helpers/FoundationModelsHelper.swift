@@ -6,22 +6,33 @@ import FoundationModels
 @MainActor
 class FoundationModelsHelper {
 
+    // MARK: - Model Configuration
+
+    /// The shared language model configured with permissive guardrails.
+    /// This allows the model to faithfully process user content that contains
+    /// profanity or other language that default guardrails would reject.
+    /// Apple's `.permissiveContentTransformations` is designed specifically for
+    /// apps that transform existing user content (e.g. cleaning up transcriptions).
+    static let permissiveModel = SystemLanguageModel(
+        guardrails: .permissiveContentTransformations
+    )
+
     // MARK: - Session Management
 
-    /// Creates a new session with custom instructions
+    /// Creates a new session with custom instructions using permissive guardrails
     /// - Parameter instructions: The system instructions for the session
     /// - Returns: A configured LanguageModelSession
     static func createSession(instructions: String) -> LanguageModelSession {
-        return LanguageModelSession(instructions: instructions)
+        return LanguageModelSession(model: permissiveModel, instructions: instructions)
     }
 
-    /// Creates a session with tools
+    /// Creates a session with tools using permissive guardrails
     /// - Parameters:
     ///   - instructions: The system instructions for the session
     ///   - tools: Array of tools to make available to the session
     /// - Returns: A configured LanguageModelSession with tools
     static func createSession<T: Tool>(instructions: String, tools: [T]) -> LanguageModelSession {
-        return LanguageModelSession(tools: tools, instructions: instructions)
+        return LanguageModelSession(model: permissiveModel, tools: tools, instructions: instructions)
     }
 
     // MARK: - Text Generation
@@ -50,6 +61,11 @@ class FoundationModelsHelper {
             throw FoundationModelsError.contextWindowExceeded
         } catch LanguageModelSession.GenerationError.unsupportedLanguageOrLocale {
             throw FoundationModelsError.unsupportedLanguage
+        } catch let error as LanguageModelSession.GenerationError {
+            if "\(error)".contains("guardrail") {
+                throw FoundationModelsError.guardrailViolation
+            }
+            throw FoundationModelsError.generationFailed(error)
         } catch {
             throw FoundationModelsError.generationFailed(error)
         }
@@ -81,6 +97,11 @@ class FoundationModelsHelper {
             throw FoundationModelsError.contextWindowExceeded
         } catch LanguageModelSession.GenerationError.unsupportedLanguageOrLocale {
             throw FoundationModelsError.unsupportedLanguage
+        } catch let error as LanguageModelSession.GenerationError {
+            if "\(error)".contains("guardrail") {
+                throw FoundationModelsError.guardrailViolation
+            }
+            throw FoundationModelsError.generationFailed(error)
         } catch {
             throw FoundationModelsError.generationFailed(error)
         }
@@ -122,14 +143,14 @@ class FoundationModelsHelper {
     /// Check if the current locale is supported by Foundation Models
     /// - Returns: True if the current locale is supported
     static func isCurrentLocaleSupported() -> Bool {
-        let supportedLanguages = SystemLanguageModel.default.supportedLanguages
+        let supportedLanguages = permissiveModel.supportedLanguages
         return supportedLanguages.contains(Locale.current.language)
     }
 
     /// Get all supported languages
     /// - Returns: Array of supported languages
     static func getSupportedLanguages() -> [Locale.Language] {
-        return Array(SystemLanguageModel.default.supportedLanguages)
+        return Array(permissiveModel.supportedLanguages)
     }
 
     // MARK: - Generation Options Helpers
@@ -162,6 +183,7 @@ class FoundationModelsHelper {
         deterministic: Bool = false
     ) async throws -> String {
         let session = LanguageModelSession(
+            model: permissiveModel,
             instructions: instructions ?? "You are a helpful assistant."
         )
 
@@ -177,6 +199,7 @@ enum FoundationModelsError: LocalizedError {
     case contextWindowExceeded
     case unsupportedLanguage
     case noContent
+    case guardrailViolation
     case generationFailed(any Error)
 
     var errorDescription: String? {
@@ -187,6 +210,8 @@ enum FoundationModelsError: LocalizedError {
             return "The current language or locale is not supported by Foundation Models."
         case .noContent:
             return "No content available to enhance. Please record or add some text first."
+        case .guardrailViolation:
+            return "The on-device model refused to process this content due to Apple's built-in safety restrictions. Your original transcription is preserved — try the Raw (No Processing) prompt instead."
         case .generationFailed(let error):
             return "Failed to generate content: \(error.localizedDescription)"
         }
@@ -211,6 +236,7 @@ class FoundationModelsSessionManager {
         }
 
         let newSession = LanguageModelSession(
+            model: FoundationModelsHelper.permissiveModel,
             instructions: instructions ?? "You are a helpful assistant."
         )
         sessions[id] = newSession
