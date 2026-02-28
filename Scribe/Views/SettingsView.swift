@@ -863,6 +863,15 @@ struct HotkeySettingsView: View {
     private func startMonitoring() {
         stopMonitoring()
 
+        // Ensure this app is the active (frontmost) app so the local
+        // event monitor receives keyboard events. MenuBarExtra apps
+        // don't reliably become active when their Settings window opens.
+        NSApp.activate()
+
+        // Temporarily unregister the existing global hotkey so it
+        // doesn't fire while the user is recording a new shortcut.
+        hotkeyService.unregisterHotkey()
+
         eventMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
             // Escape cancels recording
             if event.keyCode == 53 {
@@ -896,6 +905,14 @@ struct HotkeySettingsView: View {
         if let monitor = eventMonitor {
             NSEvent.removeMonitor(monitor)
             eventMonitor = nil
+        }
+
+        // Re-register the hotkey if it was unregistered for recording
+        // but no new hotkey was recorded (user cancelled via Escape or
+        // window close). If a new hotkey was recorded, registerHotkey
+        // was already called in the event handler so isRegistered is true.
+        if !hotkeyService.isRegistered {
+            hotkeyService.registerHotkey(from: settings.hotkeyString)
         }
     }
 
