@@ -101,6 +101,7 @@ struct GeneralSettingsView: View {
             Section("Behavior") {
                 Toggle("Copy to clipboard automatically", isOn: $settings.copyToClipboardAutomatically)
                 Toggle("Play feedback sounds", isOn: $settings.playFeedbackSounds)
+                Toggle("Play sound during AI processing", isOn: $settings.playProcessingIndicator)
                 Toggle("Show notifications", isOn: $settings.showNotifications)
             }
 
