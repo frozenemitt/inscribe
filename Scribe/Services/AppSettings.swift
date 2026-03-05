@@ -34,6 +34,11 @@ final class AppSettings {
         didSet { save("showNotifications", showNotifications) }
     }
 
+    /// Whether to play a looping sound during AI processing
+    var playProcessingIndicator: Bool {
+        didSet { save("playProcessingIndicator", playProcessingIndicator) }
+    }
+
     // MARK: - Hotkey Settings (macOS only)
 
     /// The global hotkey combination (stored as string representation)
@@ -49,6 +54,7 @@ final class AppSettings {
         self.copyToClipboardAutomatically = UserDefaults.standard.object(forKey: "copyToClipboardAutomatically") as? Bool ?? true
         self.playFeedbackSounds = UserDefaults.standard.object(forKey: "playFeedbackSounds") as? Bool ?? true
         self.showNotifications = UserDefaults.standard.object(forKey: "showNotifications") as? Bool ?? true
+        self.playProcessingIndicator = UserDefaults.standard.object(forKey: "playProcessingIndicator") as? Bool ?? true
         self.hotkeyString = UserDefaults.standard.string(forKey: "hotkeyString") ?? "⌃⌥⌘C"
 
         // Load optional values
@@ -80,6 +86,7 @@ final class AppSettings {
         copyToClipboardAutomatically = true
         playFeedbackSounds = true
         showNotifications = true
+        playProcessingIndicator = true
         hotkeyString = "⌃⌥⌘C"
 
         print("[AppSettings] Reset to defaults")

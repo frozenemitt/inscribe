@@ -57,6 +57,10 @@ final class AudioFeedbackService {
 
     static let shared = AudioFeedbackService()
 
+    #if os(macOS)
+    private var loopingSound: NSSound?
+    #endif
+
     private init() {}
 
     // MARK: - Public API
@@ -75,6 +79,31 @@ final class AudioFeedbackService {
         guard settings.playFeedbackSounds else { return }
         play(sound)
     }
+
+    // MARK: - Processing Loop (macOS)
+
+    #if os(macOS)
+    /// Start a looping sound to indicate AI processing is in progress
+    func startProcessingLoop() {
+        stopProcessingLoop()
+        guard let sound = NSSound(named: "Bottle") else { return }
+        sound.loops = true
+        sound.play()
+        loopingSound = sound
+    }
+
+    /// Stop the processing loop sound
+    func stopProcessingLoop() {
+        loopingSound?.stop()
+        loopingSound = nil
+    }
+
+    /// Start processing loop if the processing indicator is enabled
+    func startProcessingLoopIfEnabled(settings: AppSettings) {
+        guard settings.playProcessingIndicator else { return }
+        startProcessingLoop()
+    }
+    #endif
 
     // MARK: - Haptic Feedback (iOS only)
 

@@ -173,6 +173,7 @@ struct ScribeApp: App {
         // Apply AI processing if enabled, falling back to raw transcript on failure
         var finalText = transcript
         if settings.aiEnabled {
+            AudioFeedbackService.shared.startProcessingLoopIfEnabled(settings: settings)
             do {
                 finalText = try await aiProcessor.process(
                     text: transcript,
@@ -180,6 +181,7 @@ struct ScribeApp: App {
                 )
             } catch {
                 print("[ScribeApp] AI processing failed, falling back to raw transcript: \(error)")
+                AudioFeedbackService.shared.stopProcessingLoop()
 
                 if settings.copyToClipboardAutomatically {
                     ClipboardService.copy(transcript)
@@ -192,6 +194,7 @@ struct ScribeApp: App {
                 )
                 return
             }
+            AudioFeedbackService.shared.stopProcessingLoop()
         }
 
         if settings.copyToClipboardAutomatically {
