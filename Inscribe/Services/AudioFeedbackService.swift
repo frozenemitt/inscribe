@@ -65,7 +65,7 @@ final class AudioFeedbackService {
 
     // MARK: - Public API
 
-    /// Play a feedback sound
+    /// Play a feedback sound using default sound names
     func play(_ sound: Sound) {
         #if os(iOS)
         AudioServicesPlaySystemSound(sound.systemSoundID)
@@ -74,19 +74,24 @@ final class AudioFeedbackService {
         #endif
     }
 
-    /// Play a feedback sound if enabled in settings
+    /// Play a feedback sound if enabled, using the user's chosen sound
     func playIfEnabled(_ sound: Sound, settings: AppSettings) {
         guard settings.playFeedbackSounds else { return }
-        play(sound)
+        #if os(iOS)
+        AudioServicesPlaySystemSound(sound.systemSoundID)
+        #elseif os(macOS)
+        let soundId = settings.soundId(for: sound)
+        SoundCatalog.shared.makeNSSound(for: soundId)?.play()
+        #endif
     }
 
     // MARK: - Processing Loop (macOS)
 
     #if os(macOS)
     /// Start a looping sound to indicate AI processing is in progress
-    func startProcessingLoop() {
+    func startProcessingLoop(soundId: String = "Bottle") {
         stopProcessingLoop()
-        guard let sound = NSSound(named: "Bottle") else { return }
+        guard let sound = SoundCatalog.shared.makeNSSound(for: soundId) else { return }
         sound.loops = true
         sound.play()
         loopingSound = sound
@@ -101,7 +106,7 @@ final class AudioFeedbackService {
     /// Start processing loop if the processing indicator is enabled
     func startProcessingLoopIfEnabled(settings: AppSettings) {
         guard settings.playProcessingIndicator else { return }
-        startProcessingLoop()
+        startProcessingLoop(soundId: settings.processingSoundName)
     }
     #endif
 
