@@ -60,7 +60,7 @@ public final class AudioFeedbackService {
 
     // MARK: - Public API
 
-    /// Play a feedback sound
+    /// Play a feedback sound using default sound names
     public func play(_ sound: Sound) {
         #if os(iOS)
         AudioServicesPlaySystemSound(sound.systemSoundID)
@@ -69,10 +69,15 @@ public final class AudioFeedbackService {
         #endif
     }
 
-    /// Play a feedback sound if enabled in settings
+    /// Play a feedback sound if enabled, using the user's chosen sound
     public func playIfEnabled(_ sound: Sound, settings: AppSettings) {
         guard settings.playFeedbackSounds else { return }
-        play(sound)
+        #if os(iOS)
+        AudioServicesPlaySystemSound(sound.systemSoundID)
+        #elseif os(macOS)
+        let soundId = settings.soundId(for: sound)
+        SoundCatalog.shared.makeNSSound(for: soundId)?.play()
+        #endif
     }
 
     // MARK: - Haptic Feedback (iOS only)

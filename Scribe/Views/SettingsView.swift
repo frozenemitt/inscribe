@@ -1,4 +1,5 @@
 import SwiftUI
+import UniformTypeIdentifiers
 
 // MARK: - Settings View (Cross-Platform)
 
@@ -17,6 +18,11 @@ struct SettingsView: View {
             GeneralSettingsView()
                 .tabItem {
                     Label("General", systemImage: "gear")
+                }
+
+            SoundsSettingsView()
+                .tabItem {
+                    Label("Sounds", systemImage: "speaker.wave.2")
                 }
 
             PromptsSettingsView()
@@ -795,6 +801,154 @@ struct AddPromptSheet: View {
     }
 }
 
+// MARK: - Sounds Settings (macOS only)
+
+#if os(macOS)
+struct SoundsSettingsView: View {
+    @Environment(AppSettings.self) private var settings
+    @Environment(SoundCatalog.self) private var soundCatalog
+
+    @State private var importError: String?
+
+    var body: some View {
+        @Bindable var settings = settings
+
+        Form {
+            Section("Feedback Sounds") {
+                SoundPickerRow(
+                    label: "Recording Started",
+                    selection: $settings.startSoundName,
+                    sounds: soundCatalog.allSounds
+                )
+                SoundPickerRow(
+                    label: "Recording Stopped",
+                    selection: $settings.stopSoundName,
+                    sounds: soundCatalog.allSounds
+                )
+                SoundPickerRow(
+                    label: "Processing Complete",
+                    selection: $settings.completeSoundName,
+                    sounds: soundCatalog.allSounds
+                )
+                SoundPickerRow(
+                    label: "Error",
+                    selection: $settings.errorSoundName,
+                    sounds: soundCatalog.allSounds
+                )
+            }
+
+            Section("Processing Indicator") {
+                SoundPickerRow(
+                    label: "Processing Loop",
+                    selection: $settings.processingSoundName,
+                    sounds: soundCatalog.allSounds
+                )
+            }
+
+            Section("Custom Sounds") {
+                if soundCatalog.customSounds.isEmpty {
+                    Text("No custom sounds imported yet.")
+                        .foregroundStyle(.secondary)
+                } else {
+                    ForEach(soundCatalog.customSounds) { sound in
+                        HStack {
+                            Text(sound.displayName)
+
+                            Spacer()
+
+                            Button {
+                                SoundCatalog.shared.preview(sound.id)
+                            } label: {
+                                Image(systemName: "speaker.wave.2")
+                            }
+                            .buttonStyle(.borderless)
+
+                            Button(role: .destructive) {
+                                deleteSound(sound.id)
+                            } label: {
+                                Image(systemName: "trash")
+                            }
+                            .buttonStyle(.borderless)
+                        }
+                    }
+                }
+
+                Button("Import Sound File...") {
+                    importSoundFile()
+                }
+
+                if let importError {
+                    Text(importError)
+                        .foregroundStyle(.red)
+                        .font(.caption)
+                }
+
+                Text("Supported formats: AIFF, WAV, MP3, CAF, M4A")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .formStyle(.grouped)
+    }
+
+    private func importSoundFile() {
+        let panel = NSOpenPanel()
+        panel.title = "Import Sound File"
+        panel.allowedContentTypes = [.aiff, .wav, .mp3, .audio]
+        panel.allowsMultipleSelection = false
+        panel.canChooseDirectories = false
+
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+
+        do {
+            try soundCatalog.importSound(from: url)
+            importError = nil
+        } catch {
+            importError = "Failed to import: \(error.localizedDescription)"
+        }
+    }
+
+    private func deleteSound(_ id: String) {
+        do {
+            // Reset any settings that reference this sound back to default
+            if settings.startSoundName == id { settings.startSoundName = "Morse" }
+            if settings.stopSoundName == id { settings.stopSoundName = "Pop" }
+            if settings.completeSoundName == id { settings.completeSoundName = "Glass" }
+            if settings.errorSoundName == id { settings.errorSoundName = "Basso" }
+            if settings.processingSoundName == id { settings.processingSoundName = "Bottle" }
+
+            try soundCatalog.deleteCustomSound(id: id)
+        } catch {
+            importError = "Failed to delete: \(error.localizedDescription)"
+        }
+    }
+}
+
+struct SoundPickerRow: View {
+    let label: String
+    @Binding var selection: String
+    let sounds: [SoundCatalog.SoundItem]
+
+    var body: some View {
+        HStack {
+            Picker(label, selection: $selection) {
+                ForEach(sounds) { sound in
+                    Text(sound.displayName).tag(sound.id)
+                }
+            }
+
+            Button {
+                SoundCatalog.shared.preview(selection)
+            } label: {
+                Image(systemName: "speaker.wave.2")
+            }
+            .buttonStyle(.borderless)
+            .disabled(selection == SoundCatalog.noneID)
+        }
+    }
+}
+#endif
+
 // MARK: - Hotkey Settings (macOS only)
 
 #if os(macOS)
@@ -984,5 +1138,6 @@ struct AboutSettingsView: View {
         .environment(PromptConfiguration())
         #if os(macOS)
         .environment(HotkeyService())
+        .environment(SoundCatalog.shared)
         #endif
 }
