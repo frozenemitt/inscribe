@@ -94,6 +94,7 @@ struct ScribeApp: App {
                 .environment(settings)
                 .environment(promptConfig)
                 .environment(hotkeyService)
+                .environment(SoundCatalog.shared)
                 .windowResizeBehavior(.enabled)
         }
     }
@@ -137,11 +138,11 @@ struct ScribeApp: App {
 
     @MainActor
     private func startRecording() async {
-        // Play feedback sound
-        AudioFeedbackService.shared.playIfEnabled(.recordingStarted, settings: settings)
-
         do {
             try await transcriptionEngine.startRecording()
+            // Play feedback sound only after microphone is ready,
+            // so the user doesn't start speaking before audio capture begins
+            AudioFeedbackService.shared.playIfEnabled(.recordingStarted, settings: settings)
             print("[ScribeApp] Recording started via hotkey")
         } catch {
             AudioFeedbackService.shared.playIfEnabled(.error, settings: settings)

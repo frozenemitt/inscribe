@@ -39,6 +39,33 @@ final class AppSettings {
         didSet { save("playProcessingIndicator", playProcessingIndicator) }
     }
 
+    // MARK: - Sound Selection (macOS)
+
+    /// Sound to play when recording starts
+    var startSoundName: String {
+        didSet { save("startSoundName", startSoundName) }
+    }
+
+    /// Sound to play when recording stops
+    var stopSoundName: String {
+        didSet { save("stopSoundName", stopSoundName) }
+    }
+
+    /// Sound to play when processing completes
+    var completeSoundName: String {
+        didSet { save("completeSoundName", completeSoundName) }
+    }
+
+    /// Sound to play on error
+    var errorSoundName: String {
+        didSet { save("errorSoundName", errorSoundName) }
+    }
+
+    /// Sound to loop during AI processing
+    var processingSoundName: String {
+        didSet { save("processingSoundName", processingSoundName) }
+    }
+
     // MARK: - Hotkey Settings (macOS only)
 
     /// The global hotkey combination (stored as string representation)
@@ -55,6 +82,11 @@ final class AppSettings {
         self.playFeedbackSounds = UserDefaults.standard.object(forKey: "playFeedbackSounds") as? Bool ?? true
         self.showNotifications = UserDefaults.standard.object(forKey: "showNotifications") as? Bool ?? true
         self.playProcessingIndicator = UserDefaults.standard.object(forKey: "playProcessingIndicator") as? Bool ?? true
+        self.startSoundName = UserDefaults.standard.string(forKey: "startSoundName") ?? "Morse"
+        self.stopSoundName = UserDefaults.standard.string(forKey: "stopSoundName") ?? "Pop"
+        self.completeSoundName = UserDefaults.standard.string(forKey: "completeSoundName") ?? "Glass"
+        self.errorSoundName = UserDefaults.standard.string(forKey: "errorSoundName") ?? "Basso"
+        self.processingSoundName = UserDefaults.standard.string(forKey: "processingSoundName") ?? "Bottle"
         self.hotkeyString = UserDefaults.standard.string(forKey: "hotkeyString") ?? "⌃⌥⌘C"
 
         // Load optional values
@@ -87,6 +119,11 @@ final class AppSettings {
         playFeedbackSounds = true
         showNotifications = true
         playProcessingIndicator = true
+        startSoundName = "Morse"
+        stopSoundName = "Pop"
+        completeSoundName = "Glass"
+        errorSoundName = "Basso"
+        processingSoundName = "Bottle"
         hotkeyString = "⌃⌥⌘C"
 
         print("[AppSettings] Reset to defaults")
@@ -95,6 +132,16 @@ final class AppSettings {
     /// Check if AI processing should be used for current transcription
     var shouldProcessWithAI: Bool {
         aiEnabled && selectedPromptId != nil
+    }
+
+    /// Get the user's chosen sound ID for a feedback sound event
+    func soundId(for sound: AudioFeedbackService.Sound) -> String {
+        switch sound {
+        case .recordingStarted: return startSoundName
+        case .recordingStopped: return stopSoundName
+        case .processingComplete: return completeSoundName
+        case .error: return errorSoundName
+        }
     }
 }
 
