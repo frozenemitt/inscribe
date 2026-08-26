@@ -1,0 +1,348 @@
+import Foundation
+import Observation
+import SwiftData
+
+#if os(macOS)
+import AppKit
+#endif
+
+/// Owns one recording from hotkey press to delivered text.
+///
+/// The menu bar button and the global hotkey both run this, so feedback sounds,
+/// notifications, the AI fallback and the output decision stay in one place.
+@MainActor
+@Observable
+final class RecordingCoordinator {
+
+    // MARK: - Dependencies
+
+    private let engine: TranscriptionEngine
+    private let aiProcessor: AIProcessor
+    private let settings: AppSettings
+
+    // MARK: - State
+
+    /// Skip the AI pass for the next recording only. Reset once it is consumed.
+    var skipAIOnce = false
+
+    /// Where the last result went, for the menu bar to report.
+    private(set) var lastDestination: String?
+
+    /// Set by the app once the store is open, so finished dictations can be kept.
+    var modelContext: ModelContext?
+
+    #if os(macOS)
+    private let overlay = DictationOverlayController()
+
+    /// Polls the engine while recording so the overlay tracks the live text.
+    ///
+    /// A timer rather than observation: the transcriber revises its volatile text many
+    /// times a second, and redrawing a window on every revision is wasteful.
+    private var overlayTicker: Task<Void, Never>?
+    #endif
+
+    #if os(macOS)
+    /// Whoever was frontmost when recording began — the app the text belongs to.
+    private var targetApp: NSRunningApplication?
+
+    /// Overrides for the target app, resolved once at the start of the recording.
+    ///
+    /// Pinned at the start rather than read at delivery: the user may have switched
+    /// apps while talking, and the settings that applied when they began are the ones
+    /// they were thinking of.
+    private var activeProfile: AppProfile?
+    #endif
+
+    /// Stops a recording that has run past `settings.maxRecordingSeconds`.
+    private var maxDurationTask: Task<Void, Never>?
+
+    var isRecording: Bool { engine.isRecording }
+    var isProcessing: Bool { aiProcessor.isProcessing }
+
+    // MARK: - Initialization
+
+    init(engine: TranscriptionEngine, aiProcessor: AIProcessor, settings: AppSettings) {
+        self.engine = engine
+        self.aiProcessor = aiProcessor
+        self.settings = settings
+    }
+
+    // MARK: - Resolved Settings
+
+    /// The prompt to run, honouring any per-app override.
+    private var effectivePromptId: UUID? {
+        #if os(macOS)
+        if let promptId = activeProfile?.promptId { return promptId }
+        #endif
+        return settings.selectedPromptId
+    }
+
+    #if os(macOS)
+    /// The output mode to use, honouring any per-app override.
+    private var effectiveOutputMode: OutputMode {
+        if let raw = activeProfile?.outputModeRaw, let mode = OutputMode(rawValue: raw) {
+            return mode
+        }
+        return settings.outputMode
+    }
+
+    /// Whether to press Return afterwards, honouring any per-app override.
+    private var effectiveAutoSubmit: Bool {
+        activeProfile?.autoSubmit ?? settings.autoSubmitAfterInsert
+    }
+    #endif
+
+    // MARK: - Recording Control
+
+    func toggle() async {
+        if engine.isRecording {
+            await stopAndProcess()
+        } else {
+            await start()
+        }
+    }
+
+    func start() async {
+        guard !engine.isRecording else { return }
+
+        #if os(macOS)
+        // Captured before we touch anything, so a menu bar click that steals focus
+        // does not redirect the text to Inscribe itself.
+        targetApp = NSWorkspace.shared.frontmostApplication
+        activeProfile = settings.profile(forBundleIdentifier: targetApp?.bundleIdentifier)
+
+        if let activeProfile {
+            print("[RecordingCoordinator] Using profile for \(activeProfile.appName)")
+        }
+
+        // Chromium-based apps need to be told to build an accessibility tree, and it
+        // takes them a moment. Asking now means it is ready by the time we deliver.
+        TextInsertionService.prepareForInsertion(into: targetApp)
+        #endif
+
+        do {
+            try await engine.startRecording(
+                contextualStrings: settings.vocabularyHints,
+                inputDeviceUID: settings.inputDeviceUID
+            )
+        } catch {
+            AudioFeedbackService.shared.playIfEnabled(.error, settings: settings)
+            NotificationService.shared.showErrorIfEnabled(error.localizedDescription, settings: settings)
+            print("[RecordingCoordinator] Failed to start: \(error)")
+            return
+        }
+
+        // Sounded only once capture is live, so the user does not talk over the gap.
+        AudioFeedbackService.shared.playIfEnabled(.recordingStarted, settings: settings)
+        startMaxDurationWatchdog()
+
+        #if os(macOS)
+        if settings.showDictationOverlay {
+            overlay.show()
+            startOverlayTicker()
+        }
+        #endif
+        print("[RecordingCoordinator] Recording started")
+    }
+
+    /// Stop, transcribe, optionally run the AI pass, then deliver the text.
+    func stopAndProcess() async {
+        guard engine.isRecording else { return }
+        maxDurationTask?.cancel()
+        maxDurationTask = nil
+
+        AudioFeedbackService.shared.playIfEnabled(.recordingStopped, settings: settings)
+
+        #if os(macOS)
+        stopOverlayTicker()
+        if settings.showDictationOverlay, settings.aiEnabled, !skipAIOnce {
+            overlay.showProcessing()
+        } else {
+            overlay.hide()
+        }
+        #endif
+
+        let rawTranscript: String
+        do {
+            rawTranscript = try await engine.stopRecording()
+        } catch {
+            AudioFeedbackService.shared.playIfEnabled(.error, settings: settings)
+            NotificationService.shared.showErrorIfEnabled(error.localizedDescription, settings: settings)
+            print("[RecordingCoordinator] Error stopping: \(error)")
+            return
+        }
+
+        // Spoken punctuation and word replacements run before the AI pass, so a
+        // corrected term reaches the model already spelled the way the user wants
+        // rather than being "corrected" back.
+        let transcript = TextProcessor.process(
+            rawTranscript,
+            spokenPunctuation: settings.spokenPunctuationEnabled,
+            replacements: settings.wordReplacements
+        )
+
+        guard !transcript.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            print("[RecordingCoordinator] Empty transcript, nothing to deliver")
+            skipAIOnce = false
+            return
+        }
+
+        let shouldUseAI = settings.aiEnabled && !skipAIOnce
+        skipAIOnce = false
+
+        guard shouldUseAI else {
+            await deliver(transcript)
+            recordHistory(text: transcript, rawText: nil)
+            AudioFeedbackService.shared.playIfEnabled(.processingComplete, settings: settings)
+            NotificationService.shared.showTranscriptionCompleteIfEnabled(
+                characterCount: transcript.count,
+                destination: lastDestination,
+                settings: settings
+            )
+            return
+        }
+
+        AudioFeedbackService.shared.startProcessingLoopIfEnabled(settings: settings)
+
+        let finalText: String
+        do {
+            finalText = try await aiProcessor.process(text: transcript, promptId: effectivePromptId)
+            AudioFeedbackService.shared.stopProcessingLoop()
+        } catch {
+            // A failed AI pass must not cost the user their words.
+            AudioFeedbackService.shared.stopProcessingLoop()
+            print("[RecordingCoordinator] AI failed, delivering raw transcript: \(error)")
+
+            await deliver(transcript)
+            recordHistory(text: transcript, rawText: nil)
+            AudioFeedbackService.shared.playIfEnabled(.processingComplete, settings: settings)
+            NotificationService.shared.showAIProcessingFailedIfEnabled(
+                characterCount: transcript.count,
+                errorDetail: error.localizedDescription,
+                settings: settings
+            )
+            return
+        }
+
+        await deliver(finalText)
+        recordHistory(text: finalText, rawText: transcript)
+        AudioFeedbackService.shared.playIfEnabled(.processingComplete, settings: settings)
+        NotificationService.shared.showTranscriptionCompleteIfEnabled(
+            characterCount: finalText.count,
+            destination: lastDestination,
+            settings: settings
+        )
+    }
+
+    /// Keep the finished dictation, so it survives landing in the wrong window.
+    private func recordHistory(text: String, rawText: String?) {
+        guard let modelContext else { return }
+
+        let promptName = effectivePromptId.flatMap { id in
+            aiProcessor.promptConfiguration.prompt(withId: id)?.name
+        }
+
+        DictationHistory.record(
+            text: text,
+            rawText: rawText,
+            destination: lastDestination,
+            promptName: promptName,
+            settings: settings,
+            in: modelContext
+        )
+    }
+
+    /// Throw away an in-flight recording without producing any text.
+    func cancel() {
+        guard engine.isRecording else { return }
+        maxDurationTask?.cancel()
+        maxDurationTask = nil
+
+        #if os(macOS)
+        stopOverlayTicker()
+        overlay.hide()
+        #endif
+
+        engine.cancelRecording()
+        skipAIOnce = false
+        lastDestination = nil
+        AudioFeedbackService.shared.playIfEnabled(.recordingStopped, settings: settings)
+        print("[RecordingCoordinator] Recording cancelled")
+    }
+
+    // MARK: - Output
+
+    /// Send finished text wherever the user's output setting says it goes.
+    private func deliver(_ text: String) async {
+        #if os(macOS)
+        // Dismissed before insertion: the panel is borderless and non-activating, but
+        // leaving it up while text lands is visual noise at the wrong moment.
+        overlay.hide()
+
+        switch effectiveOutputMode {
+        case .clipboardOnly:
+            ClipboardService.copy(text)
+            lastDestination = "Clipboard"
+
+        case .smartInsert:
+            let outcome = await TextInsertionService.deliver(
+                text,
+                targetApp: targetApp,
+                restoreClipboard: settings.restoreClipboardAfterPaste,
+                autoSubmit: effectiveAutoSubmit,
+                submitUsesShift: settings.useShiftReturnAfterInsert
+            )
+            switch outcome {
+            case .inserted(let appName):
+                lastDestination = appName
+            case .copiedToClipboard:
+                lastDestination = "Clipboard"
+            }
+        }
+        #else
+        if settings.copyToClipboardAutomatically {
+            ClipboardService.copy(text)
+            lastDestination = "Clipboard"
+        }
+        #endif
+    }
+
+    #if os(macOS)
+    // MARK: - Overlay
+
+    private func startOverlayTicker() {
+        stopOverlayTicker()
+
+        overlayTicker = Task { [weak self] in
+            while !Task.isCancelled {
+                guard let self, self.engine.isRecording else { return }
+                self.overlay.update(text: self.engine.currentTranscript + self.engine.volatileText)
+                try? await Task.sleep(for: .milliseconds(120))
+            }
+        }
+    }
+
+    private func stopOverlayTicker() {
+        overlayTicker?.cancel()
+        overlayTicker = nil
+    }
+    #endif
+
+    // MARK: - Safety Cap
+
+    /// Stop a recording that has outlived `settings.maxRecordingSeconds`.
+    ///
+    /// A hotkey whose key-up never arrives — a lost event, a hung app — would
+    /// otherwise record until the disk filled.
+    private func startMaxDurationWatchdog() {
+        maxDurationTask?.cancel()
+
+        let limit = max(30, settings.maxRecordingSeconds)
+        maxDurationTask = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(limit))
+            guard !Task.isCancelled, let self, self.engine.isRecording else { return }
+            print("[RecordingCoordinator] Hit the \(limit)s cap, stopping")
+            await self.stopAndProcess()
+        }
+    }
+}

@@ -160,60 +160,74 @@ final class NotificationService {
         }
     }
 
+    // MARK: - Delivery
+
+    /// Post a banner.
+    ///
+    /// - Parameter withSound: The app plays its own completion and error sounds, so a
+    ///   notification chime on top of them is one noise too many. Only sounds when the
+    ///   app's own feedback is switched off.
+    private func post(title: String, body: String, withSound: Bool) {
+        let content = UNMutableNotificationContent()
+        content.title = title
+        content.body = body
+        if withSound {
+            content.sound = .default
+        }
+
+        let request = UNNotificationRequest(
+            identifier: UUID().uuidString,
+            content: content,
+            trigger: nil
+        )
+
+        UNUserNotificationCenter.current().add(request)
+    }
+
     // MARK: - Public API
 
-    /// Show a notification when transcription is complete
-    func showTranscriptionComplete(characterCount: Int) {
-        let content = UNMutableNotificationContent()
-        content.title = "Transcription Complete"
-        content.body = "\(characterCount) characters copied to clipboard"
-        content.sound = .default
-
-        let request = UNNotificationRequest(
-            identifier: UUID().uuidString,
-            content: content,
-            trigger: nil
-        )
-
-        UNUserNotificationCenter.current().add(request)
-    }
-
-    /// Show a notification for errors
-    func showError(_ message: String) {
-        let content = UNMutableNotificationContent()
-        content.title = "Transcription Error"
-        content.body = message
-        content.sound = .default
-
-        let request = UNNotificationRequest(
-            identifier: UUID().uuidString,
-            content: content,
-            trigger: nil
-        )
-
-        UNUserNotificationCenter.current().add(request)
-    }
-
-    /// Show notification if enabled in settings
-    func showTranscriptionCompleteIfEnabled(characterCount: Int, settings: AppSettings) {
+    /// Announce a finished transcript, if the user wants to hear about it.
+    ///
+    /// - Parameter destination: Where the text went — an app name, or "Clipboard".
+    ///   Saying "copied to clipboard" when it was typed into Slack is worse than silence.
+    func showTranscriptionCompleteIfEnabled(
+        characterCount: Int,
+        destination: String?,
+        settings: AppSettings
+    ) {
         guard settings.showNotifications else { return }
-        showTranscriptionComplete(characterCount: characterCount)
+
+        let body: String
+        switch destination {
+        case .some(let place) where place != "Clipboard":
+            body = "\(characterCount) characters typed into \(place)"
+        case .some:
+            body = "\(characterCount) characters copied to the clipboard"
+        case .none:
+            body = "\(characterCount) characters ready"
+        }
+
+        post(title: "Transcription Complete", body: body, withSound: !settings.playFeedbackSounds)
     }
 
-    /// Show a notification when AI processing failed but raw transcription was preserved
-    func showAIProcessingFailed(characterCount: Int, errorDetail: String) {
-        let content = UNMutableNotificationContent()
-        content.title = "AI Processing Failed"
-        content.body = "\(characterCount) characters copied to clipboard without AI processing. \(errorDetail)"
-        content.sound = .default
+    /// Report a failure, if error notifications are on.
+    func showErrorIfEnabled(_ message: String, settings: AppSettings) {
+        guard settings.notifyOnError else { return }
+        post(title: "Transcription Error", body: message, withSound: !settings.playFeedbackSounds)
+    }
 
-        let request = UNNotificationRequest(
-            identifier: UUID().uuidString,
-            content: content,
-            trigger: nil
+    /// Report that the AI pass failed but the raw transcript survived.
+    func showAIProcessingFailedIfEnabled(
+        characterCount: Int,
+        errorDetail: String,
+        settings: AppSettings
+    ) {
+        guard settings.notifyOnError else { return }
+        post(
+            title: "AI Processing Skipped",
+            body: "\(characterCount) characters delivered without AI processing. \(errorDetail)",
+            withSound: !settings.playFeedbackSounds
         )
-
-        UNUserNotificationCenter.current().add(request)
     }
 }
 

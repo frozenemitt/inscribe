@@ -304,6 +304,7 @@
 				DEVELOPMENT_TEAM = "";
 				"DEVELOPMENT_TEAM[sdk=macosx*]" = HJHDPC34T4;
 				ENABLE_APP_SANDBOX = YES;
+				"ENABLE_APP_SANDBOX[sdk=macosx*]" = NO;
 				ENABLE_HARDENED_RUNTIME = YES;
 				ENABLE_INCOMING_NETWORK_CONNECTIONS = NO;
 				ENABLE_OUTGOING_NETWORK_CONNECTIONS = YES;
@@ -321,7 +322,8 @@
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_CFBundleDisplayName = Inscribe;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.utilities";
-				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Sccribe needs access to transcribe your microphone audio";
+				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Inscribe needs microphone access to transcribe your speech.";
+				INFOPLIST_FILE = Configuration/Info.plist;
 				INFOPLIST_KEY_NSSpeechRecognitionUsageDescription = "Inscribe uses speech recognition to convert your voice to text.";
 				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphoneos*]" = YES;
 				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphonesimulator*]" = YES;
@@ -373,6 +375,7 @@
 				DEVELOPMENT_TEAM = "";
 				"DEVELOPMENT_TEAM[sdk=macosx*]" = HJHDPC34T4;
 				ENABLE_APP_SANDBOX = YES;
+				"ENABLE_APP_SANDBOX[sdk=macosx*]" = NO;
 				ENABLE_HARDENED_RUNTIME = YES;
 				ENABLE_INCOMING_NETWORK_CONNECTIONS = NO;
 				ENABLE_OUTGOING_NETWORK_CONNECTIONS = YES;
@@ -390,7 +393,8 @@
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_CFBundleDisplayName = Inscribe;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.utilities";
-				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Sccribe needs access to transcribe your microphone audio";
+				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Inscribe needs microphone access to transcribe your speech.";
+				INFOPLIST_FILE = Configuration/Info.plist;
 				INFOPLIST_KEY_NSSpeechRecognitionUsageDescription = "Inscribe uses speech recognition to convert your voice to text.";
 				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphoneos*]" = YES;
 				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphonesimulator*]" = YES;

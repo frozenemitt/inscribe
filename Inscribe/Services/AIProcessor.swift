@@ -25,7 +25,7 @@ final class AIProcessor {
 
     // MARK: - Configuration
 
-    private let promptConfiguration: PromptConfiguration
+    let promptConfiguration: PromptConfiguration
 
     // MARK: - Available Models
 
@@ -68,7 +68,14 @@ final class AIProcessor {
     ///   - text: The transcribed text to process
     ///   - promptId: The ID of the prompt to use (nil = use default)
     /// - Returns: Processed text
-    func process(text: String, promptId: UUID? = nil) async throws -> String {
+    /// - Parameter surroundingText: What is already in the field being dictated into.
+    ///   Given to the model as background so a reply matches the thread it belongs to.
+    ///   It is explicitly marked as context to be read but not rewritten.
+    func process(
+        text: String,
+        promptId: UUID? = nil,
+        surroundingText: String? = nil
+    ) async throws -> String {
         // Get the prompt
         let effectivePromptId = promptId ?? PromptConfiguration.defaultPromptId
         guard let prompt = promptConfiguration.prompt(withId: effectivePromptId) else {
@@ -81,7 +88,11 @@ final class AIProcessor {
             return text
         }
 
-        return try await processWithPrompt(text: text, prompt: prompt)
+        return try await processWithPrompt(
+            text: text,
+            prompt: prompt,
+            surroundingText: surroundingText
+        )
     }
 
     /// Process text with a custom prompt (not from configuration)
@@ -130,7 +141,11 @@ final class AIProcessor {
 
     // MARK: - Private Implementation
 
-    private func processWithPrompt(text: String, prompt: Prompt) async throws -> String {
+    private func processWithPrompt(
+        text: String,
+        prompt: Prompt,
+        surroundingText: String? = nil
+    ) async throws -> String {
         guard !text.isEmpty else {
             throw AIProcessorError.emptyInput
         }
@@ -158,7 +173,25 @@ final class AIProcessor {
             let session = FoundationModelsHelper.createSession(instructions: prompt.systemPrompt)
 
             // Apply the user template to the text
-            let userPrompt = prompt.apply(to: text)
+            var userPrompt = prompt.apply(to: text)
+
+            // Prepended, and fenced off in its own tags, so the model treats it as
+            // background rather than as more text to rewrite. Without the fencing the
+            // model tends to "clean up" the surrounding document too and hand it back.
+            if let surroundingText, !surroundingText.isEmpty {
+                userPrompt = """
+                    <context>
+                    The user is dictating into a text field that already contains the \
+                    following. Use it only to match tone, terminology and the thread of \
+                    the conversation. Do not repeat it, summarise it, or include any of \
+                    it in your reply.
+
+                    \(surroundingText)
+                    </context>
+
+                    \(userPrompt)
+                    """
+            }
 
             // Use per-prompt generation settings with structured output
             let options = prompt.generationOptions()
