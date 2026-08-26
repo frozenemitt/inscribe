@@ -65,6 +65,10 @@ struct ScribeApp: App {
     // MARK: - Initialization
 
     init() {
+        // Before anything reads a preference: the app has changed bundle identifier,
+        // and UserDefaults is keyed by it.
+        PreferencesMigration.runIfNeeded()
+
         // Built here rather than inline so the coordinator can be handed the very
         // same instances the views observe.
         let settings = AppSettings()
