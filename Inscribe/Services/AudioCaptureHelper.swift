@@ -48,8 +48,12 @@ final class AudioCaptureHelper: @unchecked Sendable {
 
         print("[AudioCaptureHelper] Input format: \(format)")
 
+        // A denied microphone does not raise an error here; the input node simply
+        // reports a zero sample rate. Saying so beats "invalid format", which sends
+        // the user looking at audio settings rather than at privacy settings.
         guard format.sampleRate > 0 && format.channelCount > 0 else {
-            throw AudioCaptureError.invalidFormat
+            print("[AudioCaptureHelper] Input format is \(format) — microphone access is probably denied")
+            throw AudioCaptureError.microphoneUnavailable
         }
 
         // Create stream with makeStream for immediate continuation
@@ -152,11 +156,29 @@ final class AudioCaptureHelper: @unchecked Sendable {
     }
 
     deinit {
-        stopCapture()
+        // A safety net only. Teardown is explicit everywhere it matters, because
+        // AVAudioEngine.stop() blocks and deinit runs on whichever thread drops the
+        // last reference — which was once the main thread, mid-hotkey.
+        if audioEngine != nil {
+            print("[AudioCaptureHelper] deinit found a live engine — teardown was missed")
+            stopCapture()
+        }
     }
 }
 
-enum AudioCaptureError: Error {
+enum AudioCaptureError: LocalizedError {
     case invalidFormat
+    case microphoneUnavailable
     case engineNotRunning
+
+    var errorDescription: String? {
+        switch self {
+        case .invalidFormat:
+            "The audio input format could not be used."
+        case .microphoneUnavailable:
+            "No microphone input. Grant Inscribe microphone access in System Settings → Privacy & Security → Microphone."
+        case .engineNotRunning:
+            "The audio engine is not running."
+        }
+    }
 }

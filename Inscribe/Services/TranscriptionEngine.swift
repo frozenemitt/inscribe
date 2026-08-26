@@ -83,6 +83,12 @@ final class TranscriptionEngine {
         }
 
         print("[TranscriptionEngine] Starting recording...")
+
+        // A previous start that threw part-way leaves an analyzer and a capture
+        // helper alive with isRecording still false, which no stop path will ever
+        // reach — both guard on isRecording. Clear that before building anything.
+        teardownSession()
+
         error = nil
         currentTranscript = ""
         volatileText = ""
@@ -94,13 +100,30 @@ final class TranscriptionEngine {
         }
 
         // Setup speech recognition first
-        try await setupSpeechRecognition(contextualStrings: contextualStrings)
+        do {
+            try await setupSpeechRecognition(contextualStrings: contextualStrings)
+        } catch {
+            // Never leave a started analyzer behind. Releasing one while its input
+            // task is still reading traps inside SpeechAnalyzer.analyzeSequence.
+            teardownSession()
+            throw error
+        }
 
-        // Start audio capture using non-MainActor helper (like original Recorder)
+        // Start audio capture using non-MainActor helper
         let helper = AudioCaptureHelper()
-        self.audioCaptureHelper = helper
+        let audioStream: AsyncStream<AudioData>
+        do {
+            audioStream = try helper.startCapture(preferredDeviceUID: inputDeviceUID)
+        } catch {
+            helper.stopCapture()
+            teardownSession()
+            throw error
+        }
 
-        let audioStream = try helper.startCapture(preferredDeviceUID: inputDeviceUID)
+        // Assigned only once capture is live: a helper stored before it succeeds
+        // would be released by the next start, and its deinit blocks in
+        // AVAudioEngine.stop() on whichever thread does the releasing.
+        self.audioCaptureHelper = helper
 
         // Start processing task to convert and feed audio to analyzer
         let analyzerContinuation = analyzerInputContinuation
@@ -177,8 +200,7 @@ final class TranscriptionEngine {
         try? await Task.sleep(nanoseconds: 100_000_000)  // 100ms for cleanup
         recognitionTask = nil
 
-        // Cleanup
-        cleanup()
+        teardownSession()
 
         // Append any remaining volatile text
         if !volatileText.isEmpty {
@@ -202,9 +224,7 @@ final class TranscriptionEngine {
         audioProcessingTask?.cancel()
         audioProcessingTask = nil
         analyzerInputContinuation?.finish()
-        recognitionTask?.cancel()
-        recognitionTask = nil
-        cleanup()
+        teardownSession()
 
         currentTranscript = ""
         volatileText = ""
@@ -459,12 +479,29 @@ final class TranscriptionEngine {
 
     // MARK: - Cleanup
 
-    private func cleanup() {
+    /// Release everything a recording session owns, whether or not one is running.
+    ///
+    /// Safe to call at any point, including on a session that was never finished.
+    /// Order matters: the input stream is finished and the recognition task cancelled
+    /// *before* the analyzer is released. Dropping an analyzer whose input task is
+    /// still reading traps inside `SpeechAnalyzer.analyzeSequence`.
+    private func teardownSession() {
+        // Stopped explicitly rather than left to deinit: AVAudioEngine.stop() blocks,
+        // and deinit runs on whichever thread happens to drop the last reference.
+        audioCaptureHelper?.stopCapture()
         audioCaptureHelper = nil
+
+        audioProcessingTask?.cancel()
         audioProcessingTask = nil
+
+        analyzerInputContinuation?.finish()
+        analyzerInputContinuation = nil
+
+        recognitionTask?.cancel()
+        recognitionTask = nil
+
         speechTranscriber = nil
         speechAnalyzer = nil
-        analyzerInputContinuation = nil
         analyzerFormat = nil
     }
 
