@@ -1,4 +1,5 @@
 import SwiftUI
+import SwiftData
 
 #if os(macOS)
 
@@ -8,7 +9,10 @@ struct MenuBarView: View {
     @Environment(PromptConfiguration.self) private var promptConfig
     @Environment(TranscriptionEngine.self) private var transcriptionEngine
     @Environment(AIProcessor.self) private var aiProcessor
-    @State private var skipAIThisTime = false
+    @Environment(RecordingCoordinator.self) private var coordinator
+    @Environment(MeetingRecorder.self) private var meetingRecorder
+    @Environment(\.openWindow) private var openWindow
+    @Environment(\.modelContext) private var modelContext
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -32,6 +36,12 @@ struct MenuBarView: View {
 
             // Quick toggles
             quickToggles
+
+            Divider()
+                .padding(.vertical, 4)
+
+            // Meetings
+            meetingSection
 
             Divider()
                 .padding(.vertical, 4)
@@ -87,7 +97,11 @@ struct MenuBarView: View {
     }
 
     private var statusTitle: String {
-        if transcriptionEngine.isRecording {
+        if meetingRecorder.isPaused {
+            return "Meeting paused"
+        } else if meetingRecorder.isRecording {
+            return "Meeting in progress"
+        } else if transcriptionEngine.isRecording {
             return "Recording..."
         } else if aiProcessor.isProcessing {
             return "Processing..."
@@ -103,7 +117,10 @@ struct MenuBarView: View {
         } else if aiProcessor.isProcessing {
             return "Applying AI prompt..."
         } else {
-            return "Press \(settings.hotkeyString) to start"
+            if let destination = coordinator.lastDestination {
+                return "Last result went to \(destination)"
+            }
+            return "\(activationHint) \(triggerLabel)"
         }
     }
 
@@ -123,7 +140,7 @@ struct MenuBarView: View {
                 Text(transcriptionEngine.isRecording ? "Stop Recording" : "Start Recording")
                     .frame(maxWidth: .infinity, alignment: .leading)
 
-                Text(settings.hotkeyString)
+                Text(triggerLabel)
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -203,7 +220,10 @@ struct MenuBarView: View {
             .toggleStyle(.switch)
             .controlSize(.small)
 
-            Toggle(isOn: $skipAIThisTime) {
+            Toggle(isOn: Binding(
+                get: { coordinator.skipAIOnce },
+                set: { coordinator.skipAIOnce = $0 }
+            )) {
                 Label("Skip AI This Time", systemImage: "forward.fill")
             }
             .toggleStyle(.switch)
@@ -211,6 +231,104 @@ struct MenuBarView: View {
             .disabled(!settings.aiEnabled)
         }
         .padding(.vertical, 4)
+    }
+
+    // MARK: - Meeting Section
+
+    /// Meeting mode is deliberately its own control rather than a variant of the
+    /// record button: dictation delivers text and forgets it, a meeting is kept.
+    private var meetingSection: some View {
+        VStack(spacing: 4) {
+            Button {
+                if meetingRecorder.hasActiveMeeting {
+                    Task { await meetingRecorder.stop(in: modelContext) }
+                } else {
+                    openWindow(id: ScribeApp.meetingsWindowID)
+                    Task { await meetingRecorder.start(in: modelContext) }
+                }
+            } label: {
+                HStack {
+                    Image(systemName: meetingRecorder.isRecording ? "stop.circle.fill" : "person.2.wave.2")
+                        .foregroundStyle(meetingRecorder.isRecording ? .red : .primary)
+                    Text(meetingButtonTitle)
+                    Spacer()
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .padding(.vertical, 4)
+            .disabled(transcriptionEngine.isRecording && !meetingRecorder.isRecording)
+
+            if meetingRecorder.hasActiveMeeting {
+                Button {
+                    Task {
+                        if meetingRecorder.isPaused {
+                            await meetingRecorder.resume()
+                        } else {
+                            await meetingRecorder.pause()
+                        }
+                    }
+                } label: {
+                    HStack {
+                        Image(systemName: meetingRecorder.isPaused ? "play.circle" : "pause.circle")
+                        Text(meetingRecorder.isPaused ? "Resume Meeting" : "Pause Meeting")
+                        Spacer()
+                    }
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .padding(.vertical, 4)
+            }
+
+            Button {
+                openWindow(id: ScribeApp.meetingsWindowID)
+            } label: {
+                HStack {
+                    Image(systemName: "list.bullet.rectangle")
+                    Text("Meetings...")
+                    Spacer()
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .padding(.vertical, 4)
+
+            Button {
+                openWindow(id: ScribeApp.importWindowID)
+            } label: {
+                HStack {
+                    Image(systemName: "waveform.badge.plus")
+                    Text("Import Recording...")
+                    Spacer()
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .padding(.vertical, 4)
+
+            Button {
+                openWindow(id: ScribeApp.historyWindowID)
+            } label: {
+                HStack {
+                    Image(systemName: "clock.arrow.circlepath")
+                    Text("Dictation History...")
+                    Spacer()
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .padding(.vertical, 4)
+        }
+    }
+
+    private var meetingButtonTitle: String {
+        switch meetingRecorder.state {
+        case .idle: "Start Meeting"
+        case .preparing: "Preparing..."
+        case .recording: "Stop Meeting"
+        case .paused: "Stop Meeting (Paused)"
+        case .finishing: "Saving..."
+        }
     }
 
     // MARK: - Footer Section
@@ -250,61 +368,22 @@ struct MenuBarView: View {
         }
     }
 
+    // MARK: - Trigger Description
+
+    /// What the user actually presses, so the menu never advertises a stale shortcut.
+    private var triggerLabel: String {
+        settings.useGlobeKey ? "🌐" : settings.hotkeyString
+    }
+
+    private var activationHint: String {
+        settings.hotkeyActivationMode == .pushToTalk ? "Hold" : "Press"
+    }
+
     // MARK: - Actions
 
     private func toggleRecording() async {
-        if transcriptionEngine.isRecording {
-            await stopRecordingAndProcess()
-        } else {
-            await startRecording()
-        }
+        await coordinator.toggle()
     }
-
-    private func startRecording() async {
-        do {
-            try await transcriptionEngine.startRecording()
-        } catch {
-            print("[MenuBarView] Failed to start recording: \(error)")
-            // TODO: Show error notification
-        }
-    }
-
-    private func stopRecordingAndProcess() async {
-        do {
-            // Stop recording and get transcript
-            let transcript = try await transcriptionEngine.stopRecording()
-
-            guard !transcript.isEmpty else {
-                print("[MenuBarView] No transcript to process")
-                return
-            }
-
-            // Process with AI if enabled
-            var finalText = transcript
-            if settings.aiEnabled && !skipAIThisTime {
-                finalText = try await aiProcessor.process(
-                    text: transcript,
-                    promptId: settings.selectedPromptId
-                )
-            }
-
-            // Copy to clipboard
-            if settings.copyToClipboardAutomatically {
-                ClipboardService.copy(finalText)
-            }
-
-            // Reset skip toggle
-            skipAIThisTime = false
-
-            // TODO: Play feedback sound
-            // TODO: Show notification
-
-        } catch {
-            print("[MenuBarView] Error during stop/process: \(error)")
-            // TODO: Show error notification
-        }
-    }
-
 }
 
 // MARK: - Menu Bar Icon
@@ -341,11 +420,19 @@ struct MenuBarIcon: View {
 }
 
 #Preview {
-    MenuBarView()
-        .environment(AppSettings())
-        .environment(PromptConfiguration())
-        .environment(TranscriptionEngine())
-        .environment(AIProcessor(promptConfiguration: PromptConfiguration()))
+    let settings = AppSettings()
+    let prompts = PromptConfiguration()
+    let engine = TranscriptionEngine()
+    let processor = AIProcessor(promptConfiguration: prompts)
+
+    return MenuBarView()
+        .environment(settings)
+        .environment(prompts)
+        .environment(engine)
+        .environment(processor)
+        .environment(RecordingCoordinator(engine: engine, aiProcessor: processor, settings: settings))
+        .environment(MeetingRecorder(engine: engine, settings: settings, aiProcessor: processor))
+        .modelContainer(for: [Meeting.self, Utterance.self, MeetingSpeaker.self], inMemory: true)
 }
 
 #endif

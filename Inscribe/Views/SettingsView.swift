@@ -1,5 +1,6 @@
 import SwiftUI
 import UniformTypeIdentifiers
+import Combine
 
 // MARK: - Settings View (Cross-Platform)
 
@@ -33,6 +34,21 @@ struct SettingsView: View {
             HotkeySettingsView()
                 .tabItem {
                     Label("Hotkey", systemImage: "keyboard")
+                }
+
+            OutputSettingsView()
+                .tabItem {
+                    Label("Output", systemImage: "text.cursor")
+                }
+
+            DictationSettingsView()
+                .tabItem {
+                    Label("Dictation", systemImage: "waveform")
+                }
+
+            AppProfilesSettingsView()
+                .tabItem {
+                    Label("Apps", systemImage: "square.grid.2x2")
                 }
 
             AboutSettingsView()
@@ -105,10 +121,37 @@ struct GeneralSettingsView: View {
             }
 
             Section("Behavior") {
+                #if os(iOS)
+                // macOS decides this on the Output tab, where the insert-or-copy
+                // choice lives; two controls for one behaviour is one too many.
                 Toggle("Copy to clipboard automatically", isOn: $settings.copyToClipboardAutomatically)
+                #endif
                 Toggle("Play feedback sounds", isOn: $settings.playFeedbackSounds)
                 Toggle("Play sound during AI processing", isOn: $settings.playProcessingIndicator)
-                Toggle("Show notifications", isOn: $settings.showNotifications)
+            }
+
+            Section("Dictation History") {
+                Toggle("Keep recent dictations", isOn: $settings.keepDictationHistory)
+
+                if settings.keepDictationHistory {
+                    Stepper(value: $settings.dictationHistoryLimit, in: 10...500, step: 10) {
+                        Text("Keep the last \(settings.dictationHistoryLimit)")
+                            .monospacedDigit()
+                    }
+                }
+
+                Text("Stores everything you dictate, in plain text on this Mac. Nothing is sent anywhere — but if you dictate anything you would not want written to disk, switch this off.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            Section("Notifications") {
+                Toggle("When a transcript is ready", isOn: $settings.showNotifications)
+                Toggle("When something goes wrong", isOn: $settings.notifyOnError)
+
+                Text("Errors are listed separately so silencing routine banners does not also hide the reason nothing appeared.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
 
             Section {
@@ -954,92 +997,186 @@ struct SoundPickerRow: View {
 #if os(macOS)
 struct HotkeySettingsView: View {
     @Environment(AppSettings.self) private var settings
-    @Environment(HotkeyService.self) private var hotkeyService
+    @Environment(GlobalHotkeyMonitor.self) private var hotkeyMonitor
 
     @State private var isRecordingHotkey = false
     @State private var eventMonitor: Any?
+    @State private var isTrusted = AccessibilityPermission.isTrusted
+
+    /// Re-check trust while the window is open — the user grants it in System Settings,
+    /// and macOS sends no notification when they do.
+    private let trustPoll = Timer.publish(every: 1.0, on: .main, in: .common).autoconnect()
 
     var body: some View {
+        @Bindable var settings = settings
+
         Form {
-            Section("Global Hotkey") {
-                HStack {
-                    Text("Current Hotkey:")
+            accessibilitySection
 
-                    Spacer()
-
-                    if isRecordingHotkey {
-                        Text("Press new hotkey...")
-                            .foregroundStyle(.orange)
-                    } else {
-                        Text(settings.hotkeyString)
-                            .font(.system(.body, design: .monospaced))
-                            .padding(.horizontal, 8)
-                            .padding(.vertical, 4)
-                            .background(
-                                RoundedRectangle(cornerRadius: 4)
-                                    .fill(Color.secondary.opacity(0.2))
-                            )
+            Section("Activation") {
+                Picker("When the key is pressed", selection: $settings.hotkeyActivationModeRaw) {
+                    ForEach(HotkeyActivationMode.allCases) { mode in
+                        Text(mode.displayName).tag(mode.rawValue)
                     }
                 }
+                .pickerStyle(.radioGroup)
+            }
 
-                Button(isRecordingHotkey ? "Cancel" : "Record New Hotkey") {
-                    isRecordingHotkey.toggle()
-                }
+            Section("Trigger Key") {
+                Toggle("Use the Globe (🌐) key", isOn: $settings.useGlobeKey)
 
-                if hotkeyService.isRegistered {
-                    Label("Hotkey is active", systemImage: "checkmark.circle.fill")
-                        .foregroundStyle(.green)
-                } else if let error = hotkeyService.lastError {
-                    Label(error, systemImage: "exclamationmark.triangle.fill")
-                        .foregroundStyle(.red)
+                if settings.useGlobeKey {
+                    Text("Set System Settings → Keyboard → \"Press 🌐 to\" to *Do Nothing*, or macOS will also switch your input source every time you dictate.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+
+                    Button("Open Keyboard Settings") {
+                        NSWorkspace.shared.open(
+                            URL(string: "x-apple.systempreferences:com.apple.Keyboard-Settings.extension")!
+                        )
+                    }
+                    .buttonStyle(.link)
+                } else {
+                    customHotkeyRow
                 }
             }
 
-            Section {
-                Text("Press a key combination with at least one modifier (⌃, ⌥, or ⌘) to set a global hotkey.")
+            Section("Undo") {
+                Toggle("Enable an undo shortcut", isOn: $settings.undoHotkeyEnabled)
+
+                if settings.undoHotkeyEnabled {
+                    LabeledContent("Shortcut") {
+                        Text(settings.undoHotkeyString)
+                            .font(.system(.body, design: .monospaced))
+                    }
+
+                    Text("Takes back the last text Inscribe typed, and puts it on your clipboard. Sends the receiving app its own Undo, and only within two minutes — after that it would throw away unrelated work.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+
+            Section("Status") {
+                if hotkeyMonitor.isRunning {
+                    Label("Listening for \(triggerDescription)", systemImage: "checkmark.circle.fill")
+                        .foregroundStyle(.green)
+                } else if let error = hotkeyMonitor.lastError {
+                    Label(error, systemImage: "exclamationmark.triangle.fill")
+                        .foregroundStyle(.red)
+                } else {
+                    Label("Not listening", systemImage: "circle.dashed")
+                        .foregroundStyle(.secondary)
+                }
+
+                Text("Press Escape while recording to discard it without producing text.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
         }
         .formStyle(.grouped)
-        .onChange(of: isRecordingHotkey) { _, recording in
-            if recording {
-                startMonitoring()
-            } else {
-                stopMonitoring()
+        .onReceive(trustPoll) { _ in
+            let current = AccessibilityPermission.isTrusted
+            guard current != isTrusted else { return }
+            isTrusted = current
+            // Trust just arrived — the tap could not have been created before now.
+            if current, !hotkeyMonitor.isRunning {
+                hotkeyMonitor.start()
             }
         }
+        .onChange(of: isRecordingHotkey) { _, recording in
+            if recording { startMonitoring() } else { stopMonitoring() }
+        }
+        .onChange(of: settings.useGlobeKey) { _, _ in rearm() }
+        .onChange(of: settings.hotkeyString) { _, _ in rearm() }
+        .onChange(of: settings.hotkeyActivationModeRaw) { _, _ in rearm() }
+        .onChange(of: settings.undoHotkeyEnabled) { _, _ in rearm() }
         .onDisappear {
             stopMonitoring()
             isRecordingHotkey = false
         }
     }
 
+    // MARK: - Sections
+
+    @ViewBuilder
+    private var accessibilitySection: some View {
+        if !isTrusted {
+            Section {
+                Label("Inscribe needs Accessibility access", systemImage: "lock.fill")
+                    .foregroundStyle(.orange)
+
+                Text("The hotkey and typing into other apps both go through macOS Accessibility. Nothing works until you grant it.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+
+                HStack {
+                    Button("Grant Access") {
+                        AccessibilityPermission.requestTrust()
+                    }
+                    Button("Open System Settings") {
+                        AccessibilityPermission.openSystemSettings()
+                    }
+                    .buttonStyle(.link)
+                }
+            }
+        }
+    }
+
+    private var customHotkeyRow: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text("Shortcut")
+                Spacer()
+                if isRecordingHotkey {
+                    Text("Press new hotkey...")
+                        .foregroundStyle(.orange)
+                } else {
+                    Text(settings.hotkeyString)
+                        .font(.system(.body, design: .monospaced))
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 4)
+                        .background(
+                            RoundedRectangle(cornerRadius: 4)
+                                .fill(Color.secondary.opacity(0.2))
+                        )
+                }
+            }
+
+            Button(isRecordingHotkey ? "Cancel" : "Record New Hotkey") {
+                isRecordingHotkey.toggle()
+            }
+
+            Text("Use at least one modifier (⌃, ⌥, or ⌘).")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    private var triggerDescription: String {
+        settings.useGlobeKey ? "the Globe key" : settings.hotkeyString
+    }
+
+    // MARK: - Hotkey Recording
+
     private func startMonitoring() {
         stopMonitoring()
 
-        // Ensure this app is the active (frontmost) app so the local
-        // event monitor receives keyboard events. MenuBarExtra apps
-        // don't reliably become active when their Settings window opens.
+        // A MenuBarExtra app is not reliably frontmost when Settings opens, and a
+        // local monitor only sees events when it is.
         NSApp.activate()
 
-        // Temporarily unregister the existing global hotkey so it
-        // doesn't fire while the user is recording a new shortcut.
-        hotkeyService.unregisterHotkey()
+        // Stop the tap so the current hotkey does not fire while recording a new one.
+        hotkeyMonitor.stop()
 
         eventMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
-            // Escape cancels recording
-            if event.keyCode == 53 {
+            if event.keyCode == 53 {  // Escape
                 isRecordingHotkey = false
                 return nil
             }
 
             let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
             let hasModifier = flags.contains(.control) || flags.contains(.option) || flags.contains(.command)
-
-            guard hasModifier else { return nil }
-
-            guard let char = characterForKeyCode(event.keyCode) else { return nil }
+            guard hasModifier, let char = characterForKeyCode(event.keyCode) else { return nil }
 
             var parts = ""
             if flags.contains(.control) { parts += "⌃" }
@@ -1049,10 +1186,18 @@ struct HotkeySettingsView: View {
             parts += String(char).uppercased()
 
             settings.hotkeyString = parts
-            hotkeyService.registerHotkey(from: parts)
             isRecordingHotkey = false
-
             return nil
+        }
+    }
+
+    /// Push the current settings into the running tap.
+    private func rearm() {
+        hotkeyMonitor.trigger = settings.hotkeyTrigger
+        hotkeyMonitor.activationMode = settings.hotkeyActivationMode
+        hotkeyMonitor.undoTrigger = settings.undoHotkeyTrigger
+        if !hotkeyMonitor.isRunning, AccessibilityPermission.isTrusted {
+            hotkeyMonitor.start()
         }
     }
 
@@ -1062,12 +1207,11 @@ struct HotkeySettingsView: View {
             eventMonitor = nil
         }
 
-        // Re-register the hotkey if it was unregistered for recording
-        // but no new hotkey was recorded (user cancelled via Escape or
-        // window close). If a new hotkey was recorded, registerHotkey
-        // was already called in the event handler so isRegistered is true.
-        if !hotkeyService.isRegistered {
-            hotkeyService.registerHotkey(from: settings.hotkeyString)
+        // Re-arm with whatever the settings now say, whether or not a new key was captured.
+        hotkeyMonitor.trigger = settings.hotkeyTrigger
+        hotkeyMonitor.activationMode = settings.hotkeyActivationMode
+        if !hotkeyMonitor.isRunning {
+            hotkeyMonitor.start()
         }
     }
 
@@ -1082,6 +1226,97 @@ struct HotkeySettingsView: View {
             45: "n", 46: "m", 47: ".", 49: " "
         ]
         return map[keyCode]
+    }
+}
+#endif
+
+// MARK: - Output Settings (macOS only)
+
+#if os(macOS)
+struct OutputSettingsView: View {
+    @Environment(AppSettings.self) private var settings
+
+    var body: some View {
+        @Bindable var settings = settings
+
+        Form {
+            Section("Where text goes") {
+                Picker("After transcribing", selection: $settings.outputModeRaw) {
+                    ForEach(OutputMode.allCases) { mode in
+                        Text(mode.displayName).tag(mode.rawValue)
+                    }
+                }
+                .pickerStyle(.radioGroup)
+
+                if settings.outputMode == .smartInsert {
+                    Text("Inscribe checks what has keyboard focus. A text field gets the text typed straight in; anything else falls back to the clipboard.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+
+            if settings.outputMode == .smartInsert {
+                Section("Typing") {
+                    Toggle("Restore my previous clipboard afterwards", isOn: $settings.restoreClipboardAfterPaste)
+
+                    Toggle("Press Return after typing", isOn: $settings.autoSubmitAfterInsert)
+
+                    if settings.autoSubmitAfterInsert {
+                        Toggle("Use Shift+Return instead", isOn: $settings.useShiftReturnAfterInsert)
+                            .padding(.leading, 20)
+
+                        Text(settings.useShiftReturnAfterInsert
+                             ? "Starts a new line and leaves the message unsent — for chat apps where Return would send it."
+                             : "Sends the message in chat apps, and runs the search in search fields.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
+
+            Section("While Speaking") {
+                Toggle("Show the words as you say them", isOn: $settings.showDictationOverlay)
+
+                Text("Floats a panel above other windows while you hold the key, so you can see the dictation landing rather than trusting a sound.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            Section("Context") {
+                Toggle("Let the AI see what is already in the field", isOn: $settings.useSurroundingContext)
+
+                Text("Reads the text around your cursor and gives it to the AI as background, so a dictated reply matches the thread it belongs to. It is marked as context to read, not text to rewrite. Uses the Accessibility access Inscribe already has, and never leaves your Mac.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            Section("Recording") {
+                LabeledContent("Maximum length") {
+                    HStack {
+                        Stepper(
+                            value: $settings.maxRecordingSeconds,
+                            in: 30...3600,
+                            step: 30
+                        ) {
+                            Text(durationLabel)
+                                .monospacedDigit()
+                        }
+                    }
+                }
+                Text("Recording stops on its own at this point, so a stuck hotkey cannot record forever.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .formStyle(.grouped)
+    }
+
+    private var durationLabel: String {
+        let seconds = settings.maxRecordingSeconds
+        let minutes = seconds / 60
+        let remainder = seconds % 60
+        if remainder == 0 { return "\(minutes) min" }
+        return "\(minutes) min \(remainder) s"
     }
 }
 #endif
@@ -1137,7 +1372,590 @@ struct AboutSettingsView: View {
         .environment(AppSettings())
         .environment(PromptConfiguration())
         #if os(macOS)
-        .environment(HotkeyService())
+        .environment(GlobalHotkeyMonitor())
         .environment(SoundCatalog.shared)
         #endif
 }
+
+// MARK: - Dictation Settings (macOS only)
+
+#if os(macOS)
+struct DictationSettingsView: View {
+    @Environment(AppSettings.self) private var settings
+
+    @State private var devices: [AudioInputDevice] = []
+    @State private var systemDefaultName = ""
+    @State private var vocabularyText = ""
+    @State private var replacements: [ReplacementRow] = []
+
+    /// One editable row. Carries its own identity so SwiftUI does not reshuffle
+    /// text fields as the user types a key that collides with another row.
+    struct ReplacementRow: Identifiable, Equatable {
+        let id = UUID()
+        var spoken: String
+        var written: String
+    }
+
+    var body: some View {
+        @Bindable var settings = settings
+
+        Form {
+            Section("Microphone") {
+                Picker("Record from", selection: $settings.inputDeviceUID) {
+                    Text("System Default (\(systemDefaultName))")
+                        .tag(AudioInputDevice.systemDefaultUID)
+                    ForEach(devices) { device in
+                        Text(device.name).tag(device.uid)
+                    }
+                }
+
+                if settings.inputDeviceUID != AudioInputDevice.systemDefaultUID,
+                   !devices.contains(where: { $0.uid == settings.inputDeviceUID }) {
+                    Label("That device is not connected — recording falls back to the system default.",
+                          systemImage: "exclamationmark.triangle")
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                }
+            }
+
+            Section("Meetings") {
+                MeetingAudioSection()
+            }
+
+            Section("Spoken Punctuation") {
+                Toggle("Say the punctuation you want", isOn: $settings.spokenPunctuationEnabled)
+
+                if settings.spokenPunctuationEnabled {
+                    Text("\"hello there period new line thanks\" becomes \"hello there.\\nthanks\". Also: comma, colon, semicolon, question mark, exclamation point, new paragraph, open and close quote, parenthesis, hyphen, ellipsis.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+
+            Section("Vocabulary") {
+                Text("Names and jargon the recognizer should expect, one per line. This steers what it listens for, so it beats correcting the same word every time.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+
+                TextEditor(text: $vocabularyText)
+                    .font(.system(.body, design: .monospaced))
+                    .frame(minHeight: 90)
+                    .onChange(of: vocabularyText) { _, text in
+                        settings.vocabularyHints = text
+                            .split(separator: "\n")
+                            .map { $0.trimmingCharacters(in: .whitespaces) }
+                            .filter { !$0.isEmpty }
+                    }
+            }
+
+            Section("Speaker Models") {
+                DiarizationModelsSection()
+            }
+
+            Section("Word Replacements") {
+                Text("Applied after transcription, whole words only and ignoring case — so a rule for \"vox\" leaves \"voxel\" alone.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+
+                ForEach($replacements) { $row in
+                    HStack {
+                        TextField("heard", text: $row.spoken)
+                        Image(systemName: "arrow.right")
+                            .foregroundStyle(.secondary)
+                        TextField("written", text: $row.written)
+                        Button {
+                            replacements.removeAll { $0.id == row.id }
+                            commitReplacements()
+                        } label: {
+                            Image(systemName: "minus.circle.fill")
+                                .foregroundStyle(.red)
+                        }
+                        .buttonStyle(.borderless)
+                    }
+                    .onChange(of: row) { _, _ in commitReplacements() }
+                }
+
+                Button {
+                    replacements.append(ReplacementRow(spoken: "", written: ""))
+                } label: {
+                    Label("Add Replacement", systemImage: "plus")
+                }
+                .buttonStyle(.borderless)
+            }
+        }
+        .formStyle(.grouped)
+        .onAppear(perform: load)
+    }
+
+    private func load() {
+        devices = AudioDeviceCatalog.inputDevices()
+        systemDefaultName = AudioDeviceCatalog.systemDefaultName()
+        vocabularyText = settings.vocabularyHints.joined(separator: "\n")
+        replacements = settings.wordReplacements
+            .sorted { $0.key.localizedCaseInsensitiveCompare($1.key) == .orderedAscending }
+            .map { ReplacementRow(spoken: $0.key, written: $0.value) }
+    }
+
+    /// Rebuild the stored dictionary from the rows, dropping half-finished ones.
+    private func commitReplacements() {
+        var result: [String: String] = [:]
+        for row in replacements {
+            let spoken = row.spoken.trimmingCharacters(in: .whitespaces)
+            let written = row.written.trimmingCharacters(in: .whitespaces)
+            guard !spoken.isEmpty, !written.isEmpty else { continue }
+            result[spoken] = written
+        }
+        settings.wordReplacements = result
+    }
+}
+#endif
+
+// MARK: - Per-App Profiles (macOS only)
+
+#if os(macOS)
+struct AppProfilesSettingsView: View {
+    @Environment(AppSettings.self) private var settings
+    @Environment(PromptConfiguration.self) private var promptConfig
+
+    @State private var profiles: [AppProfile] = []
+    @State private var isPickingApp = false
+
+    var body: some View {
+        Form {
+            Section {
+                Text("Override the prompt or output for particular apps. The app that was frontmost when you started talking decides which profile runs.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            if profiles.isEmpty {
+                Section {
+                    Text("No profiles yet.")
+                        .foregroundStyle(.secondary)
+                }
+            }
+
+            ForEach($profiles) { $profile in
+                Section {
+                    Toggle(profile.appName, isOn: $profile.isEnabled)
+                        .font(.headline)
+                        .onChange(of: profile.isEnabled) { _, _ in commit() }
+
+                    Picker("Prompt", selection: Binding(
+                        get: { profile.promptId },
+                        set: { profile.promptId = $0; commit() }
+                    )) {
+                        Text("Use the default").tag(nil as UUID?)
+                        ForEach(promptConfig.visiblePrompts) { prompt in
+                            Text(prompt.name).tag(prompt.id as UUID?)
+                        }
+                    }
+                    .disabled(!profile.isEnabled)
+
+                    Picker("Output", selection: Binding(
+                        get: { profile.outputModeRaw },
+                        set: { profile.outputModeRaw = $0; commit() }
+                    )) {
+                        Text("Use the default").tag(nil as String?)
+                        ForEach(OutputMode.allCases) { mode in
+                            Text(mode.displayName).tag(mode.rawValue as String?)
+                        }
+                    }
+                    .disabled(!profile.isEnabled)
+
+                    Picker("Press Return after typing", selection: Binding(
+                        get: { profile.autoSubmit },
+                        set: { profile.autoSubmit = $0; commit() }
+                    )) {
+                        Text("Use the default").tag(nil as Bool?)
+                        Text("Yes").tag(true as Bool?)
+                        Text("No").tag(false as Bool?)
+                    }
+                    .disabled(!profile.isEnabled)
+
+                    Button("Remove Profile", role: .destructive) {
+                        profiles.removeAll { $0.id == profile.id }
+                        commit()
+                    }
+                    .buttonStyle(.borderless)
+                }
+            }
+
+            Section {
+                Button {
+                    isPickingApp = true
+                } label: {
+                    Label("Add App", systemImage: "plus")
+                }
+                .buttonStyle(.borderless)
+            }
+        }
+        .formStyle(.grouped)
+        .onAppear(perform: load)
+        .sheet(isPresented: $isPickingApp) {
+            RunningAppPicker { app in
+                add(app)
+                isPickingApp = false
+            } onCancel: {
+                isPickingApp = false
+            }
+        }
+    }
+
+    private func load() {
+        profiles = settings.appProfiles.values
+            .sorted { $0.appName.localizedCaseInsensitiveCompare($1.appName) == .orderedAscending }
+    }
+
+    private func commit() {
+        settings.appProfiles = Dictionary(
+            uniqueKeysWithValues: profiles.map { ($0.bundleIdentifier, $0) }
+        )
+    }
+
+    private func add(_ app: NSRunningApplication) {
+        guard let bundleID = app.bundleIdentifier else { return }
+        guard !profiles.contains(where: { $0.bundleIdentifier == bundleID }) else { return }
+
+        profiles.append(AppProfile(
+            bundleIdentifier: bundleID,
+            appName: app.localizedName ?? bundleID,
+            promptId: nil,
+            outputModeRaw: nil,
+            autoSubmit: nil
+        ))
+        profiles.sort { $0.appName.localizedCaseInsensitiveCompare($1.appName) == .orderedAscending }
+        commit()
+    }
+}
+
+/// Pick from the apps currently running, so the user never types a bundle identifier.
+struct RunningAppPicker: View {
+    let onPick: (NSRunningApplication) -> Void
+    let onCancel: () -> Void
+
+    private var apps: [NSRunningApplication] {
+        NSWorkspace.shared.runningApplications
+            .filter { $0.activationPolicy == .regular && $0.bundleIdentifier != nil }
+            .sorted {
+                ($0.localizedName ?? "").localizedCaseInsensitiveCompare($1.localizedName ?? "") == .orderedAscending
+            }
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            Text("Choose an App")
+                .font(.headline)
+                .padding()
+
+            List(apps, id: \.processIdentifier) { app in
+                Button {
+                    onPick(app)
+                } label: {
+                    HStack {
+                        if let icon = app.icon {
+                            Image(nsImage: icon)
+                                .resizable()
+                                .frame(width: 20, height: 20)
+                        }
+                        Text(app.localizedName ?? app.bundleIdentifier ?? "Unknown")
+                        Spacer()
+                    }
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+            }
+
+            Divider()
+
+            HStack {
+                Spacer()
+                Button("Cancel", action: onCancel)
+                    .keyboardShortcut(.cancelAction)
+            }
+            .padding()
+        }
+        .frame(width: 360, height: 420)
+    }
+}
+#endif
+
+// MARK: - Diarization Model Management (macOS only)
+
+#if os(macOS)
+/// Status and updates for the CoreML speaker models.
+///
+/// FluidAudio downloads these once and never looks again — its only test is whether
+/// the file exists, so an install keeps whatever the repository held that day forever.
+/// This is the missing half: compare the recorded revision against the published head,
+/// and replace on request.
+struct DiarizationModelsSection: View {
+
+    @State private var isInstalled = false
+    @State private var sizeLabel = ""
+    @State private var installedAt: Date?
+    @State private var installedRevision: String?
+
+    @State private var isChecking = false
+    @State private var isUpdating = false
+    @State private var checkResult: CheckResult?
+
+    @State private var unusedFolders: [(name: String, size: Int64)] = []
+
+    enum CheckResult: Equatable {
+        case upToDate(Date?)
+        case updateAvailable(Date?, changedFiles: Int)
+        case failed(String)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            status
+
+            if isInstalled {
+                HStack(spacing: 12) {
+                    Button {
+                        check()
+                    } label: {
+                        if isChecking {
+                            HStack(spacing: 6) {
+                                ProgressView().controlSize(.small)
+                                Text("Checking...")
+                            }
+                        } else {
+                            Text("Check for Updates")
+                        }
+                    }
+                    .disabled(isChecking || isUpdating)
+
+                    if case .updateAvailable = checkResult {
+                        Button(isUpdating ? "Updating..." : "Update Now") { update() }
+                            .disabled(isUpdating)
+                    } else {
+                        // Always reachable: a check that reports a problem must leave
+                        // the user something to press.
+                        Button(isUpdating ? "Removing..." : "Re-download Models") { update() }
+                            .disabled(isChecking || isUpdating)
+                    }
+                }
+
+                if let checkResult {
+                    resultLabel(checkResult)
+                }
+
+                Text("Checking verifies every installed file against the content hash HuggingFace publishes — SHA-256 for model weights, git blob hashes for the rest. No audio or transcript leaves your Mac; it reads public metadata only. Re-downloading removes the local copies so the next meeting fetches them fresh.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            if !unusedFolders.isEmpty {
+                Divider()
+                unusedModels
+            }
+        }
+        .onAppear(perform: refresh)
+    }
+
+    // MARK: Sections
+
+    @ViewBuilder
+    private var status: some View {
+        if isInstalled {
+            LabeledContent("Installed") {
+                VStack(alignment: .trailing, spacing: 2) {
+                    Text(sizeLabel)
+                    if let installedAt {
+                        Text(installedAt.formatted(date: .abbreviated, time: .shortened))
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    if let installedRevision {
+                        Text(installedRevision.prefix(7))
+                            .font(.system(.caption2, design: .monospaced))
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
+        } else {
+            Label("Not installed — downloads automatically on your first meeting (about 13 MB).",
+                  systemImage: "arrow.down.circle")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    @ViewBuilder
+    private func resultLabel(_ result: CheckResult) -> some View {
+        switch result {
+        case .upToDate(let date):
+            Label(
+                date.map { "Verified — contents match the models published \($0.formatted(date: .abbreviated, time: .omitted))" }
+                    ?? "Verified — contents match the published models",
+                systemImage: "checkmark.seal.fill"
+            )
+            .font(.caption)
+            .foregroundStyle(.green)
+
+        case .updateAvailable(let date, let changed):
+            Label(
+                date.map { "\(changed) file\(changed == 1 ? "" : "s") no longer match — published \($0.formatted(date: .abbreviated, time: .omitted))" }
+                    ?? "\(changed) file\(changed == 1 ? "" : "s") do not match the published models",
+                systemImage: "arrow.down.circle.fill"
+            )
+            .font(.caption)
+            .foregroundStyle(.orange)
+
+        case .failed(let message):
+            Label(message, systemImage: "exclamationmark.triangle")
+                .font(.caption)
+                .foregroundStyle(.red)
+        }
+    }
+
+    private var unusedModels: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("Other FluidAudio Models")
+                .font(.caption.bold())
+
+            Text("FluidAudio shares one cache across every model it offers. Inscribe uses only the speaker models — Apple's SpeechTranscriber does the transcribing — so these are taking space nothing reads.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+            ForEach(unusedFolders, id: \.name) { folder in
+                HStack {
+                    Text(folder.name)
+                        .font(.caption)
+                    Spacer()
+                    Text(DiarizationModelStore.formatted(bytes: folder.size))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+
+            Button("Remove Unused Models (\(DiarizationModelStore.formatted(bytes: unusedFolders.reduce(0) { $0 + $1.size })))") {
+                try? DiarizationModelStore.removeUnusedModels()
+                refresh()
+            }
+            .buttonStyle(.borderless)
+            .font(.caption)
+        }
+    }
+
+    // MARK: Actions
+
+    private func refresh() {
+        isInstalled = DiarizationModelStore.isInstalled
+        sizeLabel = DiarizationModelStore.formatted(bytes: DiarizationModelStore.sizeOnDisk)
+        installedAt = DiarizationModelStore.installedAt
+        installedRevision = DiarizationModelStore.installedRevision
+        unusedFolders = DiarizationModelStore.unusedModelFolders()
+    }
+
+    private func check() {
+        isChecking = true
+        checkResult = nil
+
+        Task {
+            do {
+                switch try await DiarizationModelStore.compareWithRemote() {
+                case .upToDate(_, let date):
+                    checkResult = .upToDate(date)
+                case .updateAvailable(_, let date, let changed):
+                    checkResult = .updateAvailable(date, changedFiles: changed)
+                }
+                refresh()
+            } catch {
+                checkResult = .failed(error.localizedDescription)
+            }
+            isChecking = false
+        }
+    }
+
+    /// Remove the local copies so the next meeting fetches fresh ones.
+    ///
+    /// Deleting rather than overwriting: FluidAudio skips any file already on disk, so
+    /// a stale copy would survive a re-download untouched.
+    private func update() {
+        isUpdating = true
+
+        Task {
+            do {
+                try DiarizationModelStore.removeLocalCopies()
+                checkResult = nil
+                refresh()
+            } catch {
+                checkResult = .failed(error.localizedDescription)
+            }
+            isUpdating = false
+        }
+    }
+}
+#endif
+
+// MARK: - Meeting Audio (macOS only)
+
+#if os(macOS)
+/// Whether meetings capture system playback as well as the microphone.
+struct MeetingAudioSection: View {
+    @Environment(AppSettings.self) private var settings
+
+    @State private var permissionChecked = false
+    @State private var hasPermission = false
+
+    var body: some View {
+        @Bindable var settings = settings
+
+        VStack(alignment: .leading, spacing: 10) {
+            Toggle("Keep the recording after a meeting ends", isOn: $settings.keepMeetingAudio)
+
+            Text("Lets you play back a line to check whether a speaker was attributed correctly, and re-run separation later. Roughly 30 MB an hour.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+            if MeetingAudioStore.totalSize() > 0 {
+                Text("Recordings currently use \(MeetingAudioStore.formatted(bytes: MeetingAudioStore.totalSize())).")
+                    .font(.caption)
+                    .foregroundStyle(.tertiary)
+            }
+
+            Divider()
+
+            Toggle("Record system audio during meetings", isOn: $settings.captureSystemAudioInMeetings)
+
+            Text("Without this a meeting captures only your microphone, so on a video call the other participants are never transcribed and speaker separation has nothing to separate.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+            if settings.captureSystemAudioInMeetings {
+                if permissionChecked && !hasPermission {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Label("macOS has not granted system audio recording.", systemImage: "lock.fill")
+                            .font(.caption)
+                            .foregroundStyle(.orange)
+
+                        Button("Open System Settings") {
+                            SystemAudioCapture.openSystemSettings()
+                        }
+                        .buttonStyle(.link)
+                        .font(.caption)
+                    }
+                } else if permissionChecked {
+                    Label("System audio recording is available.", systemImage: "checkmark.circle.fill")
+                        .font(.caption)
+                        .foregroundStyle(.green)
+                }
+
+                Button(permissionChecked ? "Check Again" : "Check Permission") {
+                    hasPermission = SystemAudioCapture.checkAvailability()
+                    permissionChecked = true
+                }
+                .font(.caption)
+
+                Text("This records everyone audible on the call, not only you. Check that the people you are meeting with are content to be recorded.")
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+            }
+        }
+    }
+}
+#endif

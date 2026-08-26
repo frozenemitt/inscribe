@@ -113,13 +113,15 @@ struct QuickTranscribeIntent: AppIntent {
             AudioFeedbackService.shared.playIfEnabled(.processingComplete, settings: settings)
 
             if aiProcessingFailed {
-                NotificationService.shared.showAIProcessingFailed(
+                NotificationService.shared.showAIProcessingFailedIfEnabled(
                     characterCount: finalText.count,
-                    errorDetail: "Raw transcription was used instead."
+                    errorDetail: "Raw transcription was used instead.",
+                    settings: settings
                 )
             } else {
                 NotificationService.shared.showTranscriptionCompleteIfEnabled(
                     characterCount: finalText.count,
+                    destination: copyToClipboard ? "Clipboard" : nil,
                     settings: settings
                 )
             }

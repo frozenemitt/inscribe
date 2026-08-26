@@ -3,6 +3,7 @@ import Combine
 import Foundation
 import Speech
 import Observation
+import CoreMedia
 
 /// Unified transcription engine for background voice-to-text
 /// Uses Apple's modern SpeechAnalyzer API (iOS 26+/macOS 26+)
@@ -16,6 +17,22 @@ final class TranscriptionEngine {
     private(set) var currentTranscript = ""
     private(set) var volatileText = ""  // Live, unconfirmed text
     private(set) var error: TranscriptionEngineError?
+
+    /// Finalized transcript runs with the audio time range each covers.
+    ///
+    /// Meeting mode aligns these against diarizer segments to decide who said what.
+    /// Populated only while `collectTimedSegments` is on, since plain dictation has no
+    /// use for them.
+    private(set) var timedSegments: [TimedTranscriptSegment] = []
+
+    /// Collect `timedSegments` during this recording.
+    var collectTimedSegments = false
+
+    /// A second consumer for the raw microphone buffers, such as diarization.
+    ///
+    /// Fanned out from the one capture rather than opening the microphone twice —
+    /// two AVAudioEngines on one device fight over the format.
+    var audioTap: (@Sendable (AVAudioPCMBuffer) -> Void)?
 
     // MARK: - Audio Components
 
@@ -53,7 +70,13 @@ final class TranscriptionEngine {
     // MARK: - Public API
 
     /// Start recording and transcribing audio
-    func startRecording() async throws {
+    /// - Parameters:
+    ///   - contextualStrings: Terms to bias the recognizer toward — names, jargon.
+    ///   - inputDeviceUID: CoreAudio UID of the microphone, or "default".
+    func startRecording(
+        contextualStrings: [String] = [],
+        inputDeviceUID: String = "default"
+    ) async throws {
         guard !isRecording else {
             print("[TranscriptionEngine] Already recording, ignoring start request")
             return
@@ -63,6 +86,7 @@ final class TranscriptionEngine {
         error = nil
         currentTranscript = ""
         volatileText = ""
+        timedSegments = []
 
         // Check authorization
         guard await checkAuthorization() else {
@@ -70,17 +94,19 @@ final class TranscriptionEngine {
         }
 
         // Setup speech recognition first
-        try await setupSpeechRecognition()
+        try await setupSpeechRecognition(contextualStrings: contextualStrings)
 
         // Start audio capture using non-MainActor helper (like original Recorder)
         let helper = AudioCaptureHelper()
         self.audioCaptureHelper = helper
 
-        let audioStream = try helper.startCapture()
+        let audioStream = try helper.startCapture(preferredDeviceUID: inputDeviceUID)
 
         // Start processing task to convert and feed audio to analyzer
         let analyzerContinuation = analyzerInputContinuation
         let targetFormat = analyzerFormat!
+
+        let tap = audioTap
 
         audioProcessingTask = Task.detached {
             print("[TranscriptionEngine] Audio processing task started")
@@ -94,6 +120,10 @@ final class TranscriptionEngine {
                 if bufferCount <= 5 || bufferCount % 100 == 0 {
                     print("[TranscriptionEngine] Processing buffer #\(bufferCount)")
                 }
+
+                // Hand the untouched buffer to any second consumer before conversion,
+                // so diarization sees the same audio the transcriber does.
+                tap?(audioData.buffer)
 
                 do {
                     let converted = try converter.convertBuffer(audioData.buffer, to: targetFormat)
@@ -246,7 +276,7 @@ final class TranscriptionEngine {
 
     // MARK: - Speech Recognition Setup
 
-    private func setupSpeechRecognition() async throws {
+    private func setupSpeechRecognition(contextualStrings: [String] = []) async throws {
         print("[TranscriptionEngine] Setting up speech recognition...")
 
         // Create input stream for analyzer
@@ -267,6 +297,22 @@ final class TranscriptionEngine {
 
         // Create analyzer with transcriber
         speechAnalyzer = SpeechAnalyzer(modules: [transcriber])
+
+        // Bias the recognizer toward the user's own vocabulary. Unlike a post-hoc
+        // replacement this changes what the model is listening for, which is what
+        // proper nouns need.
+        let hints = contextualStrings.filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty }
+        if !hints.isEmpty {
+            let context = AnalysisContext()
+            context.contextualStrings[.general] = hints
+            do {
+                try await speechAnalyzer?.setContext(context)
+                print("[TranscriptionEngine] Applied \(hints.count) vocabulary hints")
+            } catch {
+                // Worth continuing without: hints improve accuracy, they are not required.
+                print("[TranscriptionEngine] Could not apply vocabulary hints: \(error)")
+            }
+        }
 
         // Ensure model is available
         try await ensureModelAvailable(transcriber: transcriber)
@@ -292,11 +338,19 @@ final class TranscriptionEngine {
                     let text = String(result.text.characters)
 
                     // Update state on MainActor
+                    // Read the run attributes off the actor, then hand over plain values.
+                    let runs: [TimedTranscriptSegment] = result.isFinal
+                        ? Self.timedRuns(from: result.text)
+                        : []
+
                     await MainActor.run {
                         guard let self = self else { return }
                         if result.isFinal {
                             self.currentTranscript += text
                             self.volatileText = ""
+                            if self.collectTimedSegments {
+                                self.timedSegments.append(contentsOf: runs)
+                            }
                         } else {
                             self.volatileText = text
                         }
@@ -313,6 +367,29 @@ final class TranscriptionEngine {
         // Start analyzer
         try await speechAnalyzer?.start(inputSequence: inputStream)
         print("[TranscriptionEngine] Speech recognition setup complete")
+    }
+
+    /// Split a finalized result into runs carrying an audio time range.
+    ///
+    /// `attributeOptions: [.audioTimeRange]` makes the transcriber stamp each run with
+    /// when it was spoken. That timestamp is what lets speaker attribution be real
+    /// rather than a proportional guess at how the text divides up.
+    private nonisolated static func timedRuns(from text: AttributedString) -> [TimedTranscriptSegment] {
+        var segments: [TimedTranscriptSegment] = []
+
+        for run in text.runs {
+            guard let range = run.audioTimeRange else { continue }
+            let piece = String(text[run.range].characters)
+            guard !piece.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { continue }
+
+            segments.append(TimedTranscriptSegment(
+                text: piece,
+                start: range.start.seconds,
+                end: range.end.seconds
+            ))
+        }
+
+        return segments
     }
 
     private func ensureModelAvailable(transcriber: SpeechTranscriber) async throws {

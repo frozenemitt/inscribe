@@ -1,6 +1,10 @@
 import AVFoundation
 import Foundation
 
+#if os(macOS)
+import CoreAudio
+#endif
+
 /// Non-actor-isolated audio capture helper
 /// AVAudioEngine callbacks work better without MainActor isolation
 final class AudioCaptureHelper: @unchecked Sendable {
@@ -12,7 +16,9 @@ final class AudioCaptureHelper: @unchecked Sendable {
     init() {}
 
     /// Start capturing audio and return a stream of audio buffers
-    func startCapture() throws -> AsyncStream<AudioData> {
+    /// - Parameter preferredDeviceUID: CoreAudio UID of the microphone to record from,
+    ///   or "default" to follow the system setting.
+    func startCapture(preferredDeviceUID: String = "default") throws -> AsyncStream<AudioData> {
         print("[AudioCaptureHelper] Starting capture...")
 
         #if os(iOS)
@@ -31,6 +37,13 @@ final class AudioCaptureHelper: @unchecked Sendable {
         engine.reset()
 
         let inputNode = engine.inputNode
+
+        #if os(macOS)
+        // Must happen before the format is read: changing the device changes the
+        // format, and a tap installed against the old one gets silence.
+        selectInputDevice(uid: preferredDeviceUID, on: inputNode)
+        #endif
+
         let format = inputNode.outputFormat(forBus: 0)
 
         print("[AudioCaptureHelper] Input format: \(format)")
@@ -67,6 +80,45 @@ final class AudioCaptureHelper: @unchecked Sendable {
 
         return stream
     }
+
+    #if os(macOS)
+    /// Point the engine's input at a specific microphone.
+    ///
+    /// Silently leaves the system default in place when the device has been unplugged,
+    /// which beats refusing to record at all.
+    private func selectInputDevice(uid: String, on inputNode: AVAudioInputNode) {
+        guard uid != AudioInputDevice.systemDefaultUID else { return }
+
+        // Resolved by UID rather than looked up in the device list: the meeting input
+        // is a private aggregate, which deliberately does not appear there.
+        guard let resolvedID = AudioDeviceCatalog.resolveDeviceID(uid: uid) else {
+            print("[AudioCaptureHelper] Device \(uid) not connected, using system default")
+            return
+        }
+        let deviceName = AudioDeviceCatalog.device(forUID: uid)?.name ?? uid
+
+        guard let audioUnit = inputNode.audioUnit else {
+            print("[AudioCaptureHelper] No audio unit on the input node")
+            return
+        }
+
+        var deviceID = resolvedID
+        let status = AudioUnitSetProperty(
+            audioUnit,
+            kAudioOutputUnitProperty_CurrentDevice,
+            kAudioUnitScope_Global,
+            0,
+            &deviceID,
+            UInt32(MemoryLayout<AudioDeviceID>.size)
+        )
+
+        if status == noErr {
+            print("[AudioCaptureHelper] Recording from \(deviceName)")
+        } else {
+            print("[AudioCaptureHelper] Could not select \(deviceName), OSStatus \(status)")
+        }
+    }
+    #endif
 
     /// Stop capturing audio
     func stopCapture() {

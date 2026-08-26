@@ -1,5 +1,7 @@
 import SwiftUI
 import AppIntents
+import SwiftData
+import os
 
 #if os(macOS)
 import AppKit
@@ -26,23 +28,64 @@ struct ScribeApp: App {
 
     // MARK: - Services
 
-    @State private var settings = AppSettings()
-    @State private var promptConfig = PromptConfiguration()
-    @State private var transcriptionEngine = TranscriptionEngine()
+    @State private var settings: AppSettings
+    @State private var promptConfig: PromptConfiguration
+    @State private var transcriptionEngine: TranscriptionEngine
     @State private var aiProcessor: AIProcessor
+    @State private var coordinator: RecordingCoordinator
+    @State private var meetingRecorder: MeetingRecorder
+
+    /// One store for meetings, shared by every scene.
+    ///
+    /// Built once here rather than by `.modelContainer(for:)` per scene, so the menu
+    /// bar and the meetings window write to the same file rather than two.
+    private let modelContainer: ModelContainer = {
+        let log = Logger(subsystem: "com.inscribe.app", category: "Store")
+        let schema = Schema(versionedSchema: MeetingSchemaV1.self)
+        do {
+            let container = try ModelContainer(for: schema, migrationPlan: MeetingMigrationPlan.self)
+            log.notice("Meeting store opened on disk")
+            MeetingStoreStatus.shared.setPersistent(true)
+            return container
+        } catch {
+            // Falling back to memory keeps dictation working, but every meeting is
+            // lost on quit — so it is recorded and shown, never silent.
+            log.error("Meeting store unavailable, falling back to memory: \(error, privacy: .public)")
+            MeetingStoreStatus.shared.setPersistent(false, reason: error.localizedDescription)
+            let config = ModelConfiguration(schema: schema, isStoredInMemoryOnly: true)
+            return try! ModelContainer(for: schema, configurations: [config])
+        }
+    }()
 
     #if os(macOS)
-    @State private var hotkeyService = HotkeyService()
+    @State private var hotkeyMonitor = GlobalHotkeyMonitor()
     @State private var hasSetupHotkey = false
     #endif
 
     // MARK: - Initialization
 
     init() {
-        // Initialize AI processor with prompt config
+        // Built here rather than inline so the coordinator can be handed the very
+        // same instances the views observe.
+        let settings = AppSettings()
         let prompts = PromptConfiguration()
+        let engine = TranscriptionEngine()
+        let processor = AIProcessor(promptConfiguration: prompts)
+
+        self._settings = State(initialValue: settings)
         self._promptConfig = State(initialValue: prompts)
-        self._aiProcessor = State(initialValue: AIProcessor(promptConfiguration: prompts))
+        self._transcriptionEngine = State(initialValue: engine)
+        self._aiProcessor = State(initialValue: processor)
+        self._coordinator = State(initialValue: RecordingCoordinator(
+            engine: engine,
+            aiProcessor: processor,
+            settings: settings
+        ))
+        self._meetingRecorder = State(initialValue: MeetingRecorder(
+            engine: engine,
+            settings: settings,
+            aiProcessor: processor
+        ))
 
         // Register App Intents shortcuts
         _ = InscribeShortcuts.self
@@ -79,7 +122,10 @@ struct ScribeApp: App {
                 .environment(promptConfig)
                 .environment(transcriptionEngine)
                 .environment(aiProcessor)
-                .environment(hotkeyService)
+                .environment(coordinator)
+                .environment(hotkeyMonitor)
+                .environment(meetingRecorder)
+                .modelContainer(modelContainer)
         } label: {
             MenuBarIcon(
                 isRecording: transcriptionEngine.isRecording,
@@ -93,33 +139,59 @@ struct ScribeApp: App {
             SettingsView()
                 .environment(settings)
                 .environment(promptConfig)
-                .environment(hotkeyService)
+                .environment(coordinator)
+                .environment(hotkeyMonitor)
                 .environment(SoundCatalog.shared)
                 .windowResizeBehavior(.enabled)
         }
+
+        // Meetings live in a real window: they are long documents to read and edit,
+        // which a menu bar popover cannot hold.
+        Window("Meetings", id: Self.meetingsWindowID) {
+            MeetingsView()
+                .environment(settings)
+                .environment(meetingRecorder)
+                .modelContainer(modelContainer)
+        }
+        .defaultSize(width: 900, height: 600)
+
+        Window("Import Recording", id: Self.importWindowID) {
+            ImportRecordingView()
+                .environment(settings)
+                .modelContainer(modelContainer)
+        }
+        .defaultSize(width: 560, height: 520)
+
+        Window("Dictation History", id: Self.historyWindowID) {
+            DictationHistoryView()
+                .environment(settings)
+                .modelContainer(modelContainer)
+        }
+        .defaultSize(width: 620, height: 520)
     }
 
+    static let meetingsWindowID = "meetings"
+    static let historyWindowID = "history"
+    static let importWindowID = "import"
+
+    // MARK: - Launch Setup
+
     private func setupHotkeyOnce() {
-        // Only setup once
         guard !hasSetupHotkey else { return }
         hasSetupHotkey = true
 
-        // Register global hotkey callback
-        hotkeyService.onHotkeyPressed = { [self] in
-            Task { @MainActor in
-                await toggleRecording()
-            }
+        // Asking on first launch puts the prompt in front of the user while they are
+        // still thinking about Inscribe. macOS shows it only once per app version.
+        if !AccessibilityPermission.isTrusted {
+            AccessibilityPermission.requestTrust()
         }
 
-        // Register the hotkey
-        hotkeyService.registerHotkey(from: settings.hotkeyString)
+        // The coordinator keeps finished dictations, which needs the open store.
+        coordinator.modelContext = modelContainer.mainContext
 
-        print("[ScribeApp] Hotkey registered: \(settings.hotkeyString), success: \(hotkeyService.isRegistered)")
-        if let error = hotkeyService.lastError {
-            print("[ScribeApp] Hotkey error: \(error)")
-        }
+        wireHotkeyCallbacks()
+        armHotkey()
 
-        // Request authorization
         Task {
             _ = await transcriptionEngine.requestAuthorization()
         }
@@ -127,89 +199,48 @@ struct ScribeApp: App {
         print("[ScribeApp] macOS setup complete")
     }
 
-    @MainActor
-    private func toggleRecording() async {
-        if transcriptionEngine.isRecording {
-            await stopRecordingAndProcess()
-        } else {
-            await startRecording()
+    /// Point the monitor's edges at the coordinator.
+    ///
+    /// Push-to-talk uses the press and release edges; toggle uses only the press.
+    /// `GlobalHotkeyMonitor` decides which callbacks fire, so both live here.
+    private func wireHotkeyCallbacks() {
+        hotkeyMonitor.onActivate = {
+            Task { @MainActor in await coordinator.start() }
         }
-    }
-
-    @MainActor
-    private func startRecording() async {
-        do {
-            try await transcriptionEngine.startRecording()
-            // Play feedback sound only after microphone is ready,
-            // so the user doesn't start speaking before audio capture begins
-            AudioFeedbackService.shared.playIfEnabled(.recordingStarted, settings: settings)
-            print("[ScribeApp] Recording started via hotkey")
-        } catch {
-            AudioFeedbackService.shared.playIfEnabled(.error, settings: settings)
-            print("[ScribeApp] Failed to start recording: \(error)")
+        hotkeyMonitor.onDeactivate = {
+            Task { @MainActor in await coordinator.stopAndProcess() }
         }
-    }
-
-    @MainActor
-    private func stopRecordingAndProcess() async {
-        // Play stop sound
-        AudioFeedbackService.shared.playIfEnabled(.recordingStopped, settings: settings)
-
-        // Stop recording and get raw transcript
-        let transcript: String
-        do {
-            transcript = try await transcriptionEngine.stopRecording()
-        } catch {
-            AudioFeedbackService.shared.playIfEnabled(.error, settings: settings)
-            NotificationService.shared.showError(error.localizedDescription)
-            print("[ScribeApp] Error stopping recording: \(error)")
-            return
+        hotkeyMonitor.onToggle = {
+            Task { @MainActor in await coordinator.toggle() }
         }
-
-        guard !transcript.isEmpty else {
-            print("[ScribeApp] No transcript to process")
-            return
+        hotkeyMonitor.onCancel = {
+            Task { @MainActor in coordinator.cancel() }
         }
-
-        // Apply AI processing if enabled, falling back to raw transcript on failure
-        var finalText = transcript
-        if settings.aiEnabled {
-            AudioFeedbackService.shared.startProcessingLoopIfEnabled(settings: settings)
-            do {
-                finalText = try await aiProcessor.process(
-                    text: transcript,
-                    promptId: settings.selectedPromptId
-                )
-            } catch {
-                print("[ScribeApp] AI processing failed, falling back to raw transcript: \(error)")
-                AudioFeedbackService.shared.stopProcessingLoop()
-
-                if settings.copyToClipboardAutomatically {
-                    ClipboardService.copy(transcript)
-                }
-
-                AudioFeedbackService.shared.playIfEnabled(.processingComplete, settings: settings)
-                NotificationService.shared.showAIProcessingFailed(
-                    characterCount: transcript.count,
-                    errorDetail: error.localizedDescription
-                )
-                return
+        hotkeyMonitor.isRecordingProvider = {
+            MainActor.assumeIsolated { transcriptionEngine.isRecording }
+        }
+        hotkeyMonitor.onUndo = {
+            Task { @MainActor in
+                guard let text = await TextInsertionService.undoLastInsertion() else { return }
+                AudioFeedbackService.shared.playIfEnabled(.recordingStopped, settings: settings)
+                print("[ScribeApp] Undid \(text.count) characters")
             }
-            AudioFeedbackService.shared.stopProcessingLoop()
         }
+    }
 
-        if settings.copyToClipboardAutomatically {
-            ClipboardService.copy(finalText)
+    /// Apply the current settings to the monitor and install the tap.
+    private func armHotkey() {
+        hotkeyMonitor.trigger = settings.hotkeyTrigger
+        hotkeyMonitor.activationMode = settings.hotkeyActivationMode
+        hotkeyMonitor.undoTrigger = settings.undoHotkeyTrigger
+
+        let started = hotkeyMonitor.start()
+        let trigger = settings.useGlobeKey ? "Globe" : settings.hotkeyString
+        print("[ScribeApp] Hotkey \(trigger) in \(settings.hotkeyActivationModeRaw) mode, listening: \(started)")
+
+        if let error = hotkeyMonitor.lastError {
+            print("[ScribeApp] Hotkey error: \(error)")
         }
-
-        // Play completion sound and show notification
-        AudioFeedbackService.shared.playIfEnabled(.processingComplete, settings: settings)
-        NotificationService.shared.showTranscriptionCompleteIfEnabled(
-            characterCount: finalText.count,
-            settings: settings
-        )
-
-        print("[ScribeApp] Transcription complete and copied to clipboard")
     }
     #endif
 

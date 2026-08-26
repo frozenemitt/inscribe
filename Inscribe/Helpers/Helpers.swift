@@ -51,17 +51,6 @@ public struct AudioData: @unchecked Sendable {
     var time: AVAudioTime
 }
 
-// Ask for permission to access the microphone.
-extension Recorder {
-    nonisolated func isAuthorized() async -> Bool {
-        if AVCaptureDevice.authorizationStatus(for: .audio) == .authorized {
-            return true
-        }
-
-        return await AVCaptureDevice.requestAccess(for: .audio)
-    }
-}
-
 extension AVAudioPlayerNode {
     var currentTime: TimeInterval {
         guard let nodeTime: AVAudioTime = self.lastRenderTime,

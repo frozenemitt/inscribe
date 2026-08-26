@@ -81,3 +81,6 @@ xcuserdata/
 
 **/*.playground/playground.xcworkspace/xcshareddata/*
 !**/*.playground/playground.xcworkspace/xcshareddata/WorkspaceSettings.xcsettings
+
+# Claude Code local overrides (personal, not shared)
+.claude/settings.local.json

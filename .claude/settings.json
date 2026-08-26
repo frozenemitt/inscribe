@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "WebFetch(domain:forums.swift.org)",
+      "WebFetch(domain:swiftpackageindex.com)"
+    ]
+  }
+}
