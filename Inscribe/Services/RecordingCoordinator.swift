@@ -56,7 +56,11 @@ final class RecordingCoordinator {
     /// Stops a recording that has run past `settings.maxRecordingSeconds`.
     private var maxDurationTask: Task<Void, Never>?
 
-    var isRecording: Bool { engine.isRecording }
+    /// True only while *this* coordinator's dictation is running.
+    ///
+    /// Not `engine.isRecording`: the engine is shared with meeting mode, and a meeting
+    /// would otherwise look like a dictation to every guard here.
+    var isRecording: Bool { engine.owner == .dictation && engine.isRecording }
     var isProcessing: Bool { aiProcessor.isProcessing }
 
     // MARK: - Initialization
@@ -95,7 +99,7 @@ final class RecordingCoordinator {
     // MARK: - Recording Control
 
     func toggle() async {
-        if engine.isRecording {
+        if isRecording {
             await stopAndProcess()
         } else {
             await start()
@@ -103,6 +107,7 @@ final class RecordingCoordinator {
     }
 
     func start() async {
+        // Refuse to start over anyone's session, including a meeting's.
         guard !engine.isRecording else { return }
 
         #if os(macOS)
@@ -122,6 +127,7 @@ final class RecordingCoordinator {
 
         do {
             try await engine.startRecording(
+                owner: .dictation,
                 contextualStrings: settings.vocabularyHints,
                 inputDeviceUID: settings.inputDeviceUID
             )
@@ -147,7 +153,7 @@ final class RecordingCoordinator {
 
     /// Stop, transcribe, optionally run the AI pass, then deliver the text.
     func stopAndProcess() async {
-        guard engine.isRecording else { return }
+        guard isRecording else { return }
         maxDurationTask?.cancel()
         maxDurationTask = nil
 
@@ -164,7 +170,7 @@ final class RecordingCoordinator {
 
         let rawTranscript: String
         do {
-            rawTranscript = try await engine.stopRecording()
+            rawTranscript = try await engine.stopRecording(owner: .dictation)
         } catch {
             AudioFeedbackService.shared.playIfEnabled(.error, settings: settings)
             NotificationService.shared.showErrorIfEnabled(error.localizedDescription, settings: settings)
@@ -254,7 +260,7 @@ final class RecordingCoordinator {
 
     /// Throw away an in-flight recording without producing any text.
     func cancel() {
-        guard engine.isRecording else { return }
+        guard isRecording else { return }
         maxDurationTask?.cancel()
         maxDurationTask = nil
 
@@ -263,7 +269,7 @@ final class RecordingCoordinator {
         overlay.hide()
         #endif
 
-        engine.cancelRecording()
+        engine.cancelRecording(owner: .dictation)
         skipAIOnce = false
         lastDestination = nil
         AudioFeedbackService.shared.playIfEnabled(.recordingStopped, settings: settings)
@@ -315,7 +321,7 @@ final class RecordingCoordinator {
 
         overlayTicker = Task { [weak self] in
             while !Task.isCancelled {
-                guard let self, self.engine.isRecording else { return }
+                guard let self, self.isRecording else { return }
                 self.overlay.update(text: self.engine.currentTranscript + self.engine.volatileText)
                 try? await Task.sleep(for: .milliseconds(120))
             }
@@ -340,7 +346,7 @@ final class RecordingCoordinator {
         let limit = max(30, settings.maxRecordingSeconds)
         maxDurationTask = Task { [weak self] in
             try? await Task.sleep(for: .seconds(limit))
-            guard !Task.isCancelled, let self, self.engine.isRecording else { return }
+            guard !Task.isCancelled, let self, self.isRecording else { return }
             print("[RecordingCoordinator] Hit the \(limit)s cap, stopping")
             await self.stopAndProcess()
         }

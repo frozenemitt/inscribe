@@ -102,9 +102,12 @@ final class MeetingRecorder {
         sessionOffset = 0
         completedAudioSeconds = 0
 
+        // Inserted up front so a crash mid-meeting still leaves a findable record,
+        // but not published until recording actually starts — the window selects
+        // whatever activeMeeting names, and a failed start deletes it out from under
+        // the detail view.
         let meeting = Meeting()
         context.insert(meeting)
-        activeMeeting = meeting
         try? context.save()
 
         // Diarization is best-effort. Failing to load the models costs speaker labels,
@@ -126,27 +129,11 @@ final class MeetingRecorder {
             meeting.audioFileName = audioWriter.begin()
         }
 
-        // One tap, two consumers: diarization needs 16 kHz mono floats, the recording
-        // wants the buffer untouched. Opening the microphone twice to serve both would
-        // give two clocks and two timelines.
-        let diarizer = self.diarizer
-        let writer = audioWriter
-        let wantsDiarization = diarizationActive
-        let wantsAudio = settings.keepMeetingAudio
-        let audioConverter = converter
-
-        engine.audioTap = { buffer in
-            if wantsAudio {
-                writer.append(buffer)
-            }
-            if wantsDiarization, let audioConverter,
-               let samples = audioConverter.floats(from: buffer) {
-                Task { await diarizer.append(samples) }
-            }
-        }
+        installAudioTap()
 
         do {
             try await engine.startRecording(
+                owner: .meeting,
                 contextualStrings: settings.vocabularyHints,
                 inputDeviceUID: meetingInputDeviceUID()
             )
@@ -154,13 +141,16 @@ final class MeetingRecorder {
             lastError = error.localizedDescription
             audioWriter.discard()
             await teardown()
+            MeetingAudioStore.delete(fileNamed: meeting.audioFileName)
             context.delete(meeting)
+            try? context.save()
             activeMeeting = nil
             state = .idle
             AudioFeedbackService.shared.playIfEnabled(.error, settings: settings)
             return
         }
 
+        activeMeeting = meeting
         state = .recording
         AudioFeedbackService.shared.playIfEnabled(.recordingStarted, settings: settings)
         print("[MeetingRecorder] Meeting started, diarization: \(diarizationActive)")
@@ -197,6 +187,29 @@ final class MeetingRecorder {
         }
     }
 
+    /// Route captured audio to the recording file and the diarizer.
+    ///
+    /// One tap, two consumers: diarization needs 16 kHz mono floats, the recording
+    /// wants the buffer untouched. Opening the microphone twice to serve both would
+    /// give two clocks and two timelines.
+    private func installAudioTap() {
+        let diarizer = self.diarizer
+        let writer = audioWriter
+        let wantsDiarization = diarizationActive
+        let wantsAudio = settings.keepMeetingAudio
+        let audioConverter = converter
+
+        engine.audioTap = { buffer in
+            if wantsAudio {
+                writer.append(buffer)
+            }
+            if wantsDiarization, let audioConverter,
+               let samples = audioConverter.floats(from: buffer) {
+                Task { await diarizer.append(samples) }
+            }
+        }
+    }
+
     /// Stop capturing without ending the meeting.
     ///
     /// The engine is torn down rather than left idling, so the microphone indicator
@@ -206,8 +219,14 @@ final class MeetingRecorder {
     func pause() async {
         guard state == .recording else { return }
 
-        let transcript = (try? await engine.stopRecording()) ?? engine.currentTranscript
+        let transcript = (try? await engine.stopRecording(owner: .meeting)) ?? engine.currentTranscript
         harvestSession(transcript: transcript)
+
+        // Disconnected while paused: the engine re-reads audioTap on every start, so a
+        // dictation taken during the pause would otherwise be written into the meeting's
+        // recording and fed to its diarizer, shifting every later timestamp.
+        engine.audioTap = nil
+        engine.collectTimedSegments = false
 
         state = .paused
         AudioFeedbackService.shared.playIfEnabled(.recordingStopped, settings: settings)
@@ -222,8 +241,13 @@ final class MeetingRecorder {
         // has actually received — the same quantity the transcript timestamps measure.
         sessionOffset = diarizationActive ? await diarizer.receivedSeconds : completedAudioSeconds
 
+        // Reconnected here, having been cleared on pause.
+        engine.collectTimedSegments = true
+        installAudioTap()
+
         do {
             try await engine.startRecording(
+                owner: .meeting,
                 contextualStrings: settings.vocabularyHints,
                 inputDeviceUID: meetingInputDeviceUID()
             )
@@ -259,6 +283,11 @@ final class MeetingRecorder {
         // The last run's end is the best available measure of this session's audio,
         // and it is the same clock the offsets use.
         completedAudioSeconds = max(completedAudioSeconds, collectedSegments.last?.end ?? offset)
+
+        // Written through on every harvest, not only at stop(). A crash or a kill that
+        // never reaches stop() then costs the current session rather than the meeting.
+        activeMeeting?.rawTranscript = accumulatedTranscript
+        activeMeeting?.recordedDuration = completedAudioSeconds
     }
 
     /// End the meeting, align speakers to text, and save.
@@ -270,7 +299,7 @@ final class MeetingRecorder {
 
         if wasRecording {
             AudioFeedbackService.shared.playIfEnabled(.recordingStopped, settings: settings)
-            let transcript = (try? await engine.stopRecording()) ?? engine.currentTranscript
+            let transcript = (try? await engine.stopRecording(owner: .meeting)) ?? engine.currentTranscript
             harvestSession(transcript: transcript)
         }
 
@@ -304,7 +333,7 @@ final class MeetingRecorder {
     func cancel(in context: ModelContext) async {
         guard state != .idle else { return }
 
-        engine.cancelRecording()
+        engine.cancelRecording(owner: .meeting)
         audioWriter.discard()
         await teardown()
 

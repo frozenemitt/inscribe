@@ -11,9 +11,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// Called by ScribeApp to provide services for hotkey setup
     var onReady: (() -> Void)?
 
+    /// Finish and save any meeting still recording. Returns false when there was none.
+    ///
+    /// A meeting's transcript, utterances and speakers live in memory until stop()
+    /// writes them, and the recording's AVAudioFile is only closed there too. Quitting
+    /// mid-meeting without this loses the transcript outright and leaves an .m4a with
+    /// no moov atom — a file that exists, so the app offers to play it, and cannot be
+    /// opened.
+    var finishActiveMeeting: (@MainActor (@escaping () -> Void) -> Bool)?
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         print("[AppDelegate] App finished launching")
         onReady?()
+    }
+
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        guard let finishActiveMeeting else { return .terminateNow }
+
+        let needsSaving = finishActiveMeeting {
+            NSApplication.shared.reply(toApplicationShouldTerminate: true)
+        }
+
+        return needsSaving ? .terminateLater : .terminateNow
     }
 }
 #endif
@@ -100,6 +119,18 @@ struct ScribeApp: App {
         // Wire up hotkey registration to fire at app launch, not on first menu click
         appDelegate.onReady = { [self] in
             setupHotkeyOnce()
+        }
+
+        // Quitting mid-meeting must not discard it.
+        appDelegate.finishActiveMeeting = { [self] done in
+            guard meetingRecorder.hasActiveMeeting else { return false }
+
+            print("[ScribeApp] Quitting with a meeting open — saving it first")
+            Task { @MainActor in
+                await meetingRecorder.stop(in: modelContainer.mainContext)
+                done()
+            }
+            return true
         }
         #endif
     }
@@ -220,8 +251,11 @@ struct ScribeApp: App {
         hotkeyMonitor.onCancel = {
             Task { @MainActor in coordinator.cancel() }
         }
+        // Dictation only. The tap swallows Escape while this returns true, so reporting
+        // a meeting here would eat the key in whatever app the user is actually using,
+        // for the whole length of the meeting — and cancel the meeting with it.
         hotkeyMonitor.isRecordingProvider = {
-            MainActor.assumeIsolated { transcriptionEngine.isRecording }
+            MainActor.assumeIsolated { coordinator.isRecording }
         }
         hotkeyMonitor.onUndo = {
             Task { @MainActor in

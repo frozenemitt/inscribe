@@ -14,6 +14,19 @@ final class TranscriptionEngine {
     // MARK: - Published State
 
     private(set) var isRecording = false
+
+    /// Who a running session belongs to.
+    ///
+    /// One engine serves both dictation and meetings, so `isRecording` alone cannot
+    /// say whose session it is. Without this, a hotkey press during a meeting tears
+    /// down the meeting's session while the meeting UI carries on as if recording.
+    private(set) var owner: SessionOwner?
+
+    /// Identifies the current session across suspension points.
+    ///
+    /// `stopRecording` awaits several times. A new session started during one of those
+    /// awaits would otherwise be torn down by the older call finishing its work.
+    private var sessionID = UUID()
     private(set) var currentTranscript = ""
     private(set) var volatileText = ""  // Live, unconfirmed text
     private(set) var error: TranscriptionEngineError?
@@ -33,6 +46,12 @@ final class TranscriptionEngine {
     /// Fanned out from the one capture rather than opening the microphone twice —
     /// two AVAudioEngines on one device fight over the format.
     var audioTap: (@Sendable (AVAudioPCMBuffer) -> Void)?
+
+    /// The two callers that drive this engine.
+    enum SessionOwner: String, Sendable {
+        case dictation
+        case meeting
+    }
 
     // MARK: - Audio Components
 
@@ -74,11 +93,12 @@ final class TranscriptionEngine {
     ///   - contextualStrings: Terms to bias the recognizer toward — names, jargon.
     ///   - inputDeviceUID: CoreAudio UID of the microphone, or "default".
     func startRecording(
+        owner: SessionOwner = .dictation,
         contextualStrings: [String] = [],
         inputDeviceUID: String = "default"
     ) async throws {
         guard !isRecording else {
-            print("[TranscriptionEngine] Already recording, ignoring start request")
+            print("[TranscriptionEngine] Already recording for \(self.owner?.rawValue ?? "?"), ignoring start")
             return
         }
 
@@ -162,20 +182,31 @@ final class TranscriptionEngine {
             print("[TranscriptionEngine] Processing ended - total: \(bufferCount), success: \(successCount)")
         }
 
+        self.owner = owner
+        sessionID = UUID()
         isRecording = true
-        print("[TranscriptionEngine] Recording started successfully")
+        print("[TranscriptionEngine] Recording started for \(owner.rawValue)")
     }
 
     /// Stop recording and return the final transcript
     @discardableResult
-    func stopRecording() async throws -> String {
+    func stopRecording(owner: SessionOwner = .dictation) async throws -> String {
         guard isRecording else {
             print("[TranscriptionEngine] Not recording, ignoring stop request")
             return currentTranscript
         }
 
+        // Refuse to end someone else's session: a dictation hotkey must not stop a
+        // meeting that happens to be using the same engine.
+        guard self.owner == owner else {
+            print("[TranscriptionEngine] \(owner.rawValue) tried to stop a \(self.owner?.rawValue ?? "?") session")
+            return currentTranscript
+        }
+
         print("[TranscriptionEngine] Stopping recording...")
+        let stoppingSession = sessionID
         isRecording = false
+        self.owner = nil
 
         // Stop audio capture helper
         audioCaptureHelper?.stopCapture()
@@ -198,8 +229,15 @@ final class TranscriptionEngine {
         // Cancel recognition task and give it time to clean up
         recognitionTask?.cancel()
         try? await Task.sleep(nanoseconds: 100_000_000)  // 100ms for cleanup
-        recognitionTask = nil
 
+        // A new session may have started while this one was awaiting. Tearing down
+        // now would dismantle that session's analyzer and capture helper.
+        guard sessionID == stoppingSession else {
+            print("[TranscriptionEngine] A newer session started; leaving it alone")
+            return currentTranscript
+        }
+
+        recognitionTask = nil
         teardownSession()
 
         // Append any remaining volatile text
@@ -213,11 +251,18 @@ final class TranscriptionEngine {
     }
 
     /// Cancel recording without returning transcript
-    func cancelRecording() {
+    func cancelRecording(owner: SessionOwner = .dictation) {
         guard isRecording else { return }
+
+        guard self.owner == owner else {
+            print("[TranscriptionEngine] \(owner.rawValue) tried to cancel a \(self.owner?.rawValue ?? "?") session")
+            return
+        }
 
         print("[TranscriptionEngine] Cancelling recording...")
         isRecording = false
+        self.owner = nil
+        sessionID = UUID()
 
         audioCaptureHelper?.stopCapture()
         audioCaptureHelper = nil
