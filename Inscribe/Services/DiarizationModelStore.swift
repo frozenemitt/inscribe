@@ -1,4 +1,5 @@
 import Foundation
+import FluidAudio
 import CryptoKit
 
 #if os(macOS)
@@ -106,12 +107,29 @@ enum DiarizationModelStore {
         UserDefaults.standard.set(revision, forKey: installedRevisionKey)
     }
 
+    // MARK: - Install
+
+    /// Download the models, and record which revision they came from.
+    ///
+    /// Deliberately not called from the recording path: starting a meeting must not
+    /// reach the network. Settings is the only caller, behind a button.
+    static func install() async throws {
+        _ = try await DiarizerModels.downloadIfNeeded()
+
+        // FluidAudio keeps no record of which revision it took, so "check for updates"
+        // would have nothing to compare against.
+        if let remote = try? await fetchLatestRevision() {
+            recordInstalledRevision(remote.revision)
+        }
+    }
+
     // MARK: - Remote
 
     /// Ask HuggingFace what the repository head is now.
     ///
-    /// The only network call Inscribe makes, and only when the user presses the button.
-    /// No audio, transcript, or user data goes with it — it is a public metadata read.
+    /// Reached only from Settings, when the user presses Install or Check for Updates.
+    /// Nothing on the recording path calls it. No audio, transcript, or user data goes
+    /// with it — it is a public metadata read.
     static func fetchLatestRevision() async throws -> RemoteModelRevision {
         // blobs=true adds a published size per file, which is what makes comparing an
         // untracked install possible without re-downloading it.
@@ -347,11 +365,13 @@ enum DiarizationModelStore {
     enum ModelStoreError: LocalizedError {
         case badResponse(Int)
         case malformedResponse
+        case notInstalled
 
         var errorDescription: String? {
             switch self {
             case .badResponse(let code): "HuggingFace returned status \(code)."
             case .malformedResponse: "Could not read the repository details."
+            case .notInstalled: "The speaker separation models are not installed. Install them in Settings."
             }
         }
     }

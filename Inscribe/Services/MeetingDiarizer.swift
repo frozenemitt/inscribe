@@ -66,21 +66,25 @@ actor MeetingDiarizer {
 
     // MARK: - Lifecycle
 
-    /// Load the CoreML models, downloading them once if they are not on disk.
+    /// Load the CoreML models from disk.
+    ///
+    /// Throws when they are not installed rather than fetching them: a meeting is the
+    /// wrong moment to start a download, and the recording path stays offline.
     ///
     /// The download is a one-off, the same shape as the speech model Apple's
     /// transcriber fetches on first use. Everything after it runs on-device.
     func prepare() async throws {
         guard manager == nil else { return }
 
+        // Checked first so `downloadIfNeeded` finds the files already there and loads
+        // them from disk. Starting a meeting must not reach the network: the models are
+        // installed from Settings, deliberately, before any of this runs.
+        guard DiarizationModelStore.isInstalled else {
+            throw DiarizationModelStore.ModelStoreError.notInstalled
+        }
+
         let models = try await DiarizerModels.downloadIfNeeded()
 
-        // Stamp what we just installed, so "check for updates" has a baseline to
-        // compare against. FluidAudio itself keeps no record of which revision it took.
-        if DiarizationModelStore.installedRevision == nil,
-           let remote = try? await DiarizationModelStore.fetchLatestRevision() {
-            DiarizationModelStore.recordInstalledRevision(remote.revision)
-        }
         let manager = DiarizerManager(config: .default)
         manager.initialize(models: models)
 

@@ -172,6 +172,9 @@ final class RecordingCoordinator {
         do {
             rawTranscript = try await engine.stopRecording(owner: .dictation)
         } catch {
+            #if os(macOS)
+            overlay.hide()
+            #endif
             AudioFeedbackService.shared.playIfEnabled(.error, settings: settings)
             NotificationService.shared.showErrorIfEnabled(error.localizedDescription, settings: settings)
             print("[RecordingCoordinator] Error stopping: \(error)")
@@ -188,6 +191,9 @@ final class RecordingCoordinator {
         )
 
         guard !transcript.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            #if os(macOS)
+            overlay.hide()
+            #endif
             print("[RecordingCoordinator] Empty transcript, nothing to deliver")
             skipAIOnce = false
             return
@@ -208,11 +214,25 @@ final class RecordingCoordinator {
             return
         }
 
+        // Read now rather than at delivery, and asked of the app the dictation was aimed
+        // at: by the time the model answers the user may be looking at something else,
+        // and the field we want is the one they were dictating into.
+        var surroundingText: String?
+        #if os(macOS)
+        if settings.useSurroundingContext {
+            surroundingText = TextInsertionService.focusedFieldContext(in: targetApp)
+        }
+        #endif
+
         AudioFeedbackService.shared.startProcessingLoopIfEnabled(settings: settings)
 
         let finalText: String
         do {
-            finalText = try await aiProcessor.process(text: transcript, promptId: effectivePromptId)
+            finalText = try await aiProcessor.process(
+                text: transcript,
+                promptId: effectivePromptId,
+                surroundingText: surroundingText
+            )
             AudioFeedbackService.shared.stopProcessingLoop()
         } catch {
             // A failed AI pass must not cost the user their words.

@@ -161,7 +161,7 @@ enum TextInsertionService {
         // Nothing was typed into an app, so there is nothing for ⌘Z to take back.
         lastInsertion = nil
 
-        guard let focused = await awaitFocusedTextElement(in: targetApp) else {
+        guard await awaitFocusedTextElement(in: targetApp) != nil else {
             log.notice("""
                 No focused text field in \(targetApp?.localizedName ?? "target", privacy: .public) \
                 — falling back to clipboard
@@ -203,8 +203,6 @@ enum TextInsertionService {
             ClipboardService.copy(previousClipboard)
             log.debug("Restored previous clipboard")
         }
-
-        _ = focused
 
         if let app = NSWorkspace.shared.frontmostApplication {
             lastInsertion = LastInsertion(
@@ -290,11 +288,6 @@ enum TextInsertionService {
 
         guard trimmed.count > limit else { return trimmed }
         return "…" + String(trimmed.suffix(limit))
-    }
-
-    /// Whether a text field currently has focus. Drives the menu bar hint.
-    static var hasFocusedTextField: Bool {
-        AccessibilityPermission.isTrusted && focusedTextElement() != nil
     }
 
     private static func copyFocusedElement(of parent: AXUIElement) -> AXUIElement? {
