@@ -251,18 +251,34 @@ struct ScribeApp: App {
         hotkeyMonitor.onCancel = {
             Task { @MainActor in coordinator.cancel() }
         }
-        // Dictation only. The tap swallows Escape while this returns true, so reporting
-        // a meeting here would eat the key in whatever app the user is actually using,
+        // Dictation only. The tap swallows Escape while this is true, so reporting a
+        // meeting here would eat the key in whatever app the user is actually using,
         // for the whole length of the meeting — and cancel the meeting with it.
-        hotkeyMonitor.isRecordingProvider = {
-            MainActor.assumeIsolated { coordinator.isRecording }
-        }
+        Self.mirrorRecordingState(from: coordinator, into: hotkeyMonitor)
         hotkeyMonitor.onUndo = {
             Task { @MainActor in
                 guard let text = await TextInsertionService.undoLastInsertion() else { return }
                 AudioFeedbackService.shared.playIfEnabled(.recordingStopped, settings: settings)
                 print("[ScribeApp] Undid \(text.count) characters")
             }
+        }
+    }
+
+    /// Keep the monitor's view of `isRecording` current.
+    ///
+    /// Pushed rather than pulled: the tap decides whether to swallow Escape on its own
+    /// thread, and reaching back to the main actor for the answer is the wait that used
+    /// to stall every keystroke on the machine. Re-arms itself after each change,
+    /// because `withObservationTracking` fires once.
+    @MainActor
+    private static func mirrorRecordingState(
+        from coordinator: RecordingCoordinator,
+        into monitor: GlobalHotkeyMonitor
+    ) {
+        withObservationTracking {
+            monitor.isRecording = coordinator.isRecording
+        } onChange: {
+            Task { @MainActor in mirrorRecordingState(from: coordinator, into: monitor) }
         }
     }
 
