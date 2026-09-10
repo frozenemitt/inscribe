@@ -64,6 +64,12 @@ final class MeetingRecorder {
     /// Audio seconds captured in sessions that have already ended.
     private var completedAudioSeconds: TimeInterval = 0
 
+    /// The start begun by `start()`, while it is still running.
+    ///
+    /// A quit arriving during "Preparing…" waits on this. Cleaning up the half-built
+    /// meeting from outside would hand the start a model the store had dropped.
+    private var startTask: Task<Void, Never>?
+
     /// The save started by `stop()`, while it is still running.
     ///
     /// Quitting can call `stop()` a second time while the first one is mid-save. That
@@ -91,7 +97,11 @@ final class MeetingRecorder {
     var isPaused: Bool { state == .paused }
 
     /// Whether a meeting is open, recording or not.
-    var hasActiveMeeting: Bool { activeMeeting != nil && state != .idle }
+    ///
+    /// Read off `state` alone rather than `activeMeeting`, which stays nil until a
+    /// meeting actually records: a quit during "Preparing…" has a row in the store and
+    /// possibly an open audio file, and answering false there abandons both.
+    var hasActiveMeeting: Bool { state != .idle }
 
     // MARK: - Initialization
 
@@ -111,6 +121,14 @@ final class MeetingRecorder {
         guard state == .idle, !engine.isRecording else { return }
 
         state = .preparing
+
+        let task = Task { await self.begin(in: context) }
+        startTask = task
+        await task.value
+        startTask = nil
+    }
+
+    private func begin(in context: ModelContext) async {
         lastError = nil
         collectedSegments = []
         accumulatedTranscript = ""
@@ -334,6 +352,13 @@ final class MeetingRecorder {
 
     /// End the meeting, align speakers to text, and save.
     func stop(in context: ModelContext) async {
+        // Let a start in flight finish first. It ends by either adopting its meeting or
+        // deleting it, so once it returns this is an ordinary stop of a recording
+        // meeting, or there is nothing left to stop.
+        if state == .preparing {
+            await startTask?.value
+        }
+
         // Quitting calls this while the Stop button's save is still running. That
         // caller has to wait for the save in flight; turning it away here reports a
         // meeting written that is still halfway through being written.
