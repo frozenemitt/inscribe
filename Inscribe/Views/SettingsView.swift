@@ -98,6 +98,9 @@ struct SettingsView: View {
 struct GeneralSettingsView: View {
     @Environment(AppSettings.self) private var settings
     @Environment(PromptConfiguration.self) private var promptConfig
+    #if os(macOS)
+    @Environment(GlobalHotkeyMonitor.self) private var hotkeyMonitor
+    #endif
 
     var body: some View {
         @Bindable var settings = settings
@@ -157,6 +160,14 @@ struct GeneralSettingsView: View {
             Section {
                 Button("Reset to Defaults") {
                     settings.resetToDefaults()
+                    #if os(macOS)
+                    // The Hotkey tab re-arms on its own changes, but it is not on
+                    // screen here — without this the old combination keeps firing and
+                    // the restored one does nothing until the app is relaunched.
+                    hotkeyMonitor.trigger = settings.hotkeyTrigger
+                    hotkeyMonitor.activationMode = settings.hotkeyActivationMode
+                    hotkeyMonitor.undoTrigger = settings.undoHotkeyTrigger
+                    #endif
                 }
             }
         }
@@ -388,16 +399,37 @@ struct PromptsSettingsView: View {
     }
 
     private func deletePrompts(at indexSet: IndexSet) {
-        for index in indexSet {
-            let prompt = promptConfig.customPrompts[index]
-            promptConfig.deletePrompt(withId: prompt.id)
+        // Resolved to ids up front: each deletion shrinks `customPrompts`, so the
+        // later indices of a multi-row delete would land on the wrong prompts.
+        let ids = indexSet.map { promptConfig.customPrompts[$0].id }
+        for id in ids {
+            deletePrompt(id: id)
         }
-        selectedPromptId = promptConfig.prompts.first?.id
     }
 
     private func deletePrompt(id: UUID) {
         promptConfig.deletePrompt(withId: id)
+        forgetDeletedPrompt(id)
         selectedPromptId = promptConfig.prompts.first?.id
+    }
+
+    /// Clear the settings still pointing at a prompt that no longer exists.
+    ///
+    /// A dangling id is not inert: the AI pass throws `promptNotFound` on every
+    /// dictation from then on, and the menu bar goes on naming a prompt as if
+    /// nothing had happened.
+    private func forgetDeletedPrompt(_ id: UUID) {
+        if settings.selectedPromptId == id {
+            settings.selectedPromptId = nil
+        }
+
+        var profiles = settings.appProfiles
+        let stale = profiles.filter { $0.value.promptId == id }.keys
+        guard !stale.isEmpty else { return }
+        for bundleID in stale {
+            profiles[bundleID]?.promptId = nil
+        }
+        settings.appProfiles = profiles
     }
 }
 
@@ -590,6 +622,9 @@ struct PromptDetailView: View {
                                 systemPrompt: systemPrompt,
                                 userTemplate: userTemplate,
                                 isBuiltIn: false,
+                                // Carried over: `updatePrompt` replaces the stored
+                                // prompt wholesale, so anything left out is reset.
+                                isVisible: prompt.isVisible,
                                 temperature: temperature,
                                 samplingMode: currentSamplingMode,
                                 maxResponseTokens: limitResponseTokens ? maxResponseTokens : nil
@@ -1546,7 +1581,10 @@ struct AppProfilesSettingsView: View {
                         set: { profile.promptId = $0; commit() }
                     )) {
                         Text("Use the default").tag(nil as UUID?)
-                        ForEach(promptConfig.visiblePrompts) { prompt in
+                        // Every prompt, not just the visible ones: hidden means hidden
+                        // from the menu bar dropdown, and a profile already pointing at
+                        // one would otherwise show an empty picker.
+                        ForEach(promptConfig.prompts) { prompt in
                             Text(prompt.name).tag(prompt.id as UUID?)
                         }
                     }
@@ -1698,6 +1736,8 @@ struct DiarizationModelsSection: View {
 
     @State private var isChecking = false
     @State private var isUpdating = false
+    @State private var isInstalling = false
+    @State private var installError: String?
     @State private var checkResult: CheckResult?
 
     @State private var unusedFolders: [(name: String, size: Int64)] = []
@@ -1748,6 +1788,17 @@ struct DiarizationModelsSection: View {
                     .foregroundStyle(.secondary)
             }
 
+            if !isInstalled {
+                Button(isInstalling ? "Installing..." : "Install Models") { install() }
+                    .disabled(isInstalling)
+
+                if let installError {
+                    Text(installError)
+                        .font(.caption)
+                        .foregroundStyle(.red)
+                }
+            }
+
             if !unusedFolders.isEmpty {
                 Divider()
                 unusedModels
@@ -1777,7 +1828,7 @@ struct DiarizationModelsSection: View {
                 }
             }
         } else {
-            Label("Not installed — downloads automatically on your first meeting (about 13 MB).",
+            Label("Not installed. Meetings record and transcribe without them; installing adds speaker labels, and downloads about 13 MB from HuggingFace.",
                   systemImage: "arrow.down.circle")
                 .font(.caption)
                 .foregroundStyle(.secondary)
@@ -1849,6 +1900,25 @@ struct DiarizationModelsSection: View {
         installedAt = DiarizationModelStore.installedAt
         installedRevision = DiarizationModelStore.installedRevision
         unusedFolders = DiarizationModelStore.unusedModelFolders()
+    }
+
+    /// Download the models, which is the only moment Inscribe fetches them.
+    ///
+    /// Recording never does this: a meeting that reached the network would make an
+    /// offline app dependent on a connection at the worst possible moment.
+    private func install() {
+        isInstalling = true
+        installError = nil
+
+        Task {
+            do {
+                try await DiarizationModelStore.install()
+                refresh()
+            } catch {
+                installError = error.localizedDescription
+            }
+            isInstalling = false
+        }
     }
 
     private func check() {

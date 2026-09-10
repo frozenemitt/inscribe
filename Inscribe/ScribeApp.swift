@@ -92,7 +92,7 @@ struct ScribeApp: App {
         // same instances the views observe.
         let settings = AppSettings()
         let prompts = PromptConfiguration()
-        let engine = TranscriptionEngine()
+        let engine = TranscriptionEngine.shared
         let processor = AIProcessor(promptConfiguration: prompts)
 
         self._settings = State(initialValue: settings)

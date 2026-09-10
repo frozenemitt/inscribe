@@ -45,14 +45,14 @@ final class LiveActivityManager: ObservableObject {
     // MARK: - Public API
 
     /// Start a Live Activity for recording
-    func startRecordingActivity() {
+    func startRecordingActivity() async {
         guard ActivityAuthorizationInfo().areActivitiesEnabled else {
             print("[LiveActivityManager] Live Activities not enabled")
             return
         }
 
         // End any existing activity
-        endActivity()
+        await endActivity()
 
         startTime = Date()
 
@@ -107,7 +107,11 @@ final class LiveActivityManager: ObservableObject {
     }
 
     /// End the Live Activity
-    func endActivity() {
+    ///
+    /// Awaited rather than handed to a detached Task: an intent runs with the app in
+    /// the background, and a process suspended before that Task got its turn would
+    /// leave the recording pill sitting on the Lock Screen.
+    func endActivity() async {
         stopUpdateTimer()
 
         guard let activity = currentActivity else { return }
@@ -119,12 +123,10 @@ final class LiveActivityManager: ObservableObject {
             elapsedSeconds: 0
         )
 
-        Task {
-            await activity.end(
-                .init(state: finalState, staleDate: nil),
-                dismissalPolicy: .immediate
-            )
-        }
+        await activity.end(
+            .init(state: finalState, staleDate: nil),
+            dismissalPolicy: .immediate
+        )
 
         currentActivity = nil
         isActivityActive = false

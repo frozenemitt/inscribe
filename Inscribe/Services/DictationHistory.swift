@@ -42,10 +42,11 @@ enum DictationHistory {
     static func prune(to limit: Int, in context: ModelContext) {
         guard limit > 0 else { return }
 
-        var descriptor = FetchDescriptor<Dictation>(
+        // Uncapped on purpose: a fetch limited to N entries can never contain an
+        // entry past N, so the highest limit the user can pick would never prune.
+        let descriptor = FetchDescriptor<Dictation>(
             sortBy: [SortDescriptor(\.createdAt, order: .reverse)]
         )
-        descriptor.fetchLimit = 500
 
         guard let entries = try? context.fetch(descriptor), entries.count > limit else { return }
 

@@ -141,11 +141,11 @@ final class GlobalHotkeyMonitor {
     /// Carries decisions from the tap thread to the main actor in order.
     private let emit: AsyncStream<HotkeyAction>.Continuation
 
-    nonisolated(unsafe) private var pump: Task<Void, Never>?
+    @ObservationIgnored nonisolated(unsafe) private var pump: Task<Void, Never>?
 
     // deinit is nonisolated and has to tear the tap down, so this carries the
     // isolation opt-out rather than the whole class.
-    nonisolated(unsafe) private var host: TapHost?
+    @ObservationIgnored nonisolated(unsafe) private var host: TapHost?
 
     // MARK: - Lifecycle
 

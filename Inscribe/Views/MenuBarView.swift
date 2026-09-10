@@ -200,11 +200,12 @@ struct MenuBarView: View {
         if !settings.aiEnabled {
             return "AI Disabled"
         }
-        guard let promptId = settings.selectedPromptId,
-              let prompt = promptConfig.prompt(withId: promptId) else {
+        guard let promptId = settings.selectedPromptId else {
             return "Clean Up"
         }
-        return prompt.name
+        // Naming the default here when the lookup fails hides a stored id whose prompt
+        // has been deleted, and with it the reason the AI pass has started failing.
+        return promptConfig.prompt(withId: promptId)?.name ?? "Missing Prompt"
     }
 
     // MARK: - Quick Toggles

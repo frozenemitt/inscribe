@@ -37,8 +37,9 @@ struct QuickTranscribeIntent: AppIntent {
         // Validate duration
         let recordingDuration = min(max(duration, 5), 120)
 
-        // Create transcription engine
-        let engine = TranscriptionEngine()
+        // The app's engine, not a new one: a second engine records over whatever the
+        // app is already doing, because the guard that refuses that is instance state.
+        let engine = TranscriptionEngine.shared
 
         // Load settings for feedback preferences
         let settings = AppSettings()
@@ -50,7 +51,7 @@ struct QuickTranscribeIntent: AppIntent {
             AudioFeedbackService.shared.playStartHaptic()
 
             // Start Live Activity
-            LiveActivityManager.shared.startRecordingActivity()
+            await LiveActivityManager.shared.startRecordingActivity()
             #endif
 
             // Start recording
@@ -73,7 +74,7 @@ struct QuickTranscribeIntent: AppIntent {
 
             guard !transcription.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
                 #if os(iOS)
-                LiveActivityManager.shared.endActivity()
+                await LiveActivityManager.shared.endActivity()
                 #endif
                 return .result(
                     value: "",
@@ -83,7 +84,7 @@ struct QuickTranscribeIntent: AppIntent {
 
             // Apply AI processing if requested, falling back to raw transcript on failure
             var finalText = transcription
-            var aiProcessingFailed = false
+            var aiFailureReason: String?
             if let promptName = promptName, !promptName.isEmpty {
                 let promptConfig = PromptConfiguration()
                 let aiProcessor = AIProcessor(promptConfiguration: promptConfig)
@@ -95,8 +96,14 @@ struct QuickTranscribeIntent: AppIntent {
                     } catch {
                         print("[QuickTranscribeIntent] AI processing failed, using raw transcript: \(error)")
                         finalText = transcription
-                        aiProcessingFailed = true
+                        aiFailureReason = "AI processing failed."
                     }
+                } else {
+                    // A name matching no prompt is a typo in the shortcut. Reported
+                    // rather than thrown: the recording is already spent, and the
+                    // transcript is still worth handing back.
+                    print("[QuickTranscribeIntent] No prompt named '\(promptName)'")
+                    aiFailureReason = "No prompt is named \"\(promptName)\"."
                 }
             }
 
@@ -107,15 +114,15 @@ struct QuickTranscribeIntent: AppIntent {
 
             // End Live Activity and show notification
             #if os(iOS)
-            LiveActivityManager.shared.endActivity()
+            await LiveActivityManager.shared.endActivity()
             #endif
 
             AudioFeedbackService.shared.playIfEnabled(.processingComplete, settings: settings)
 
-            if aiProcessingFailed {
+            if let aiFailureReason {
                 NotificationService.shared.showAIProcessingFailedIfEnabled(
                     characterCount: finalText.count,
-                    errorDetail: "Raw transcription was used instead.",
+                    errorDetail: "\(aiFailureReason) Raw transcription was used instead.",
                     settings: settings
                 )
             } else {
@@ -126,10 +133,10 @@ struct QuickTranscribeIntent: AppIntent {
                 )
             }
 
-            let dialog = if aiProcessingFailed {
+            let dialog = if let aiFailureReason {
                 copyToClipboard
-                    ? "AI processing failed. Raw transcription copied to clipboard."
-                    : "AI processing failed. Raw transcription returned."
+                    ? "\(aiFailureReason) Raw transcription copied to clipboard."
+                    : "\(aiFailureReason) Raw transcription returned."
             } else {
                 copyToClipboard
                     ? "Transcription complete and copied to clipboard."
@@ -143,7 +150,7 @@ struct QuickTranscribeIntent: AppIntent {
 
         } catch {
             #if os(iOS)
-            LiveActivityManager.shared.endActivity()
+            await LiveActivityManager.shared.endActivity()
             AudioFeedbackService.shared.playErrorHaptic()
             #endif
             AudioFeedbackService.shared.playIfEnabled(.error, settings: settings)
@@ -188,7 +195,10 @@ struct RecordTranscriptionIntent: AppIntent {
     @MainActor
     func perform() async throws -> some IntentResult & ReturnsValue<String> & ProvidesDialog {
         let recordingDuration = min(max(duration, 5), 300)
-        let engine = TranscriptionEngine()
+
+        // The app's engine, not a new one: a second engine records over whatever the
+        // app is already doing, because the guard that refuses that is instance state.
+        let engine = TranscriptionEngine.shared
 
         do {
             try await engine.startRecording()
@@ -270,37 +280,6 @@ enum AIActionEnum: String, AppEnum {
         case .fixPunctuation: return .fixPunctuation
         case .raw: return .raw
         }
-    }
-}
-
-// MARK: - Start/Stop Intents (for toggle behavior)
-
-/// Intent to start recording (for use with Shortcuts automations)
-struct StartRecordingIntent: AppIntent {
-    static let title: LocalizedStringResource = "Start Recording"
-    static let description = IntentDescription("Start recording audio for transcription.")
-
-    static let openAppWhenRun: Bool = true  // Opens app to show recording status
-
-    @MainActor
-    func perform() async throws -> some IntentResult {
-        // This would need to integrate with a shared state manager
-        // For now, we just open the app
-        return .result()
-    }
-}
-
-/// Intent to stop recording and get the result
-struct StopRecordingIntent: AppIntent {
-    static let title: LocalizedStringResource = "Stop Recording"
-    static let description = IntentDescription("Stop recording and get the transcription.")
-
-    static let openAppWhenRun: Bool = false
-
-    @MainActor
-    func perform() async throws -> some IntentResult & ReturnsValue<String> {
-        // This would need to integrate with a shared state manager
-        return .result(value: "")
     }
 }
 

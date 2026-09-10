@@ -92,7 +92,7 @@ struct DictationHistoryView: View {
                     HStack(spacing: 12) {
                         Button {
                             ClipboardService.copy(dictation.text)
-                            justCopied = dictation.persistentModelID
+                            confirmCopy(of: dictation)
                         } label: {
                             Label(
                                 justCopied == dictation.persistentModelID ? "Copied" : "Copy",
@@ -111,7 +111,7 @@ struct DictationHistoryView: View {
                         if dictation.wasEditedByAI, let raw = dictation.rawText {
                             Button {
                                 ClipboardService.copy(raw)
-                                justCopied = dictation.persistentModelID
+                                confirmCopy(of: dictation)
                             } label: {
                                 Label("Copy Original", systemImage: "arrow.uturn.backward")
                             }
@@ -131,6 +131,21 @@ struct DictationHistoryView: View {
                     .font(.caption)
                 }
                 .padding(.vertical, 4)
+            }
+        }
+    }
+
+    /// Show the checkmark, then take it back.
+    ///
+    /// Nothing else in the row ever clears it, so a row left showing "Copied" would
+    /// still claim a copy that happened an hour ago.
+    private func confirmCopy(of dictation: Dictation) {
+        let id = dictation.persistentModelID
+        justCopied = id
+        Task {
+            try? await Task.sleep(for: .seconds(2))
+            if justCopied == id {
+                justCopied = nil
             }
         }
     }

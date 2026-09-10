@@ -84,6 +84,14 @@ final class TranscriptionEngine {
 
     // MARK: - Initialization
 
+    /// The one engine in the process.
+    ///
+    /// App Intents are built by the system and cannot be handed the app's own
+    /// dependencies, so an intent that made its own engine opened a second microphone
+    /// session the `isRecording` guard could not see. Everything that records goes
+    /// through this instance, which is what makes that guard mean anything.
+    static let shared = TranscriptionEngine()
+
     init() {}
 
     // MARK: - Public API

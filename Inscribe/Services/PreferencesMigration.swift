@@ -29,7 +29,9 @@ enum PreferencesMigration {
 
         var copied = 0
 
-        for domain in legacyDomains {
+        // Walked newest first: the loop below never overwrites a key it has already
+        // written, so front to back would hand every setting to the oldest identifier.
+        for domain in legacyDomains.reversed() {
             guard let legacy = UserDefaults(suiteName: domain) else { continue }
 
             // persistentDomain, not dictionaryRepresentation: the latter includes every
