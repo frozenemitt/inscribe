@@ -97,9 +97,11 @@ final class TranscriptionEngine {
         contextualStrings: [String] = [],
         inputDeviceUID: String = "default"
     ) async throws {
+        // Thrown rather than returned: a caller that silently "succeeds" here goes on to
+        // set up its own UI for a session that does not exist, and only finds out when
+        // the recording turns out to be empty.
         guard !isRecording else {
-            print("[TranscriptionEngine] Already recording for \(self.owner?.rawValue ?? "?"), ignoring start")
-            return
+            throw TranscriptionEngineError.busy(owner: self.owner?.rawValue ?? "another session")
         }
 
         print("[TranscriptionEngine] Starting recording...")
@@ -226,16 +228,18 @@ final class TranscriptionEngine {
             self.error = .transcriptionFailed(error.localizedDescription)
         }
 
+        // Checked before anything is cancelled, not after. A session started while the
+        // finalize above was awaiting owns `recognitionTask` and `currentTranscript` by
+        // now, so cancelling here would kill the new recording, and returning the
+        // transcript would hand this caller the new session's words.
+        guard sessionID == stoppingSession else {
+            print("[TranscriptionEngine] A newer session started; leaving it alone")
+            return ""
+        }
+
         // Cancel recognition task and give it time to clean up
         recognitionTask?.cancel()
         try? await Task.sleep(nanoseconds: 100_000_000)  // 100ms for cleanup
-
-        // A new session may have started while this one was awaiting. Tearing down
-        // now would dismantle that session's analyzer and capture helper.
-        guard sessionID == stoppingSession else {
-            print("[TranscriptionEngine] A newer session started; leaving it alone")
-            return currentTranscript
-        }
 
         recognitionTask = nil
         teardownSession()
@@ -344,13 +348,17 @@ final class TranscriptionEngine {
     private func setupSpeechRecognition(contextualStrings: [String] = []) async throws {
         print("[TranscriptionEngine] Setting up speech recognition...")
 
+        // Resolved before the transcriber is built, not after: a transcriber is bound to
+        // the locale it is created with, so choosing one afterwards changes nothing.
+        let locale = try await resolveSupportedLocale()
+
         // Create input stream for analyzer
         let (inputStream, inputContinuation) = AsyncStream<AnalyzerInput>.makeStream()
         self.analyzerInputContinuation = inputContinuation
 
         // Create transcriber
         speechTranscriber = SpeechTranscriber(
-            locale: Self.defaultLocale,
+            locale: locale,
             transcriptionOptions: [],
             reportingOptions: [.volatileResults],
             attributeOptions: [.audioTimeRange]
@@ -380,7 +388,7 @@ final class TranscriptionEngine {
         }
 
         // Ensure model is available
-        try await ensureModelAvailable(transcriber: transcriber)
+        try await ensureModelAvailable(transcriber: transcriber, locale: locale)
 
         // Get best audio format
         analyzerFormat = await SpeechAnalyzer.bestAvailableAudioFormat(compatibleWith: [transcriber])
@@ -457,34 +465,25 @@ final class TranscriptionEngine {
         return segments
     }
 
-    private func ensureModelAvailable(transcriber: SpeechTranscriber) async throws {
+    /// The first locale in `fallbackLocales` this system can actually transcribe.
+    private func resolveSupportedLocale() async throws -> Locale {
+        let supported = await SpeechTranscriber.supportedLocales
+
+        for candidate in Self.fallbackLocales
+        where supported.contains(where: { $0.identifier(.bcp47) == candidate.identifier(.bcp47) }) {
+            return candidate
+        }
+
+        throw TranscriptionEngineError.localeNotSupported
+    }
+
+    private func ensureModelAvailable(transcriber: SpeechTranscriber, locale: Locale) async throws {
         print("[TranscriptionEngine] Ensuring model is available...")
 
         // Check if download is needed
         if let downloader = try await AssetInventory.assetInstallationRequest(supporting: [transcriber]) {
             print("[TranscriptionEngine] Downloading speech model...")
             try await downloader.downloadAndInstall()
-        }
-
-        // Find a supported locale
-        let supportedLocales = await SpeechTranscriber.supportedLocales
-        var localeToUse: Locale?
-
-        // Try preferred locale first
-        if supportedLocales.contains(where: { $0.identifier(.bcp47) == Self.defaultLocale.identifier(.bcp47) }) {
-            localeToUse = Self.defaultLocale
-        } else {
-            // Try fallbacks
-            for fallback in Self.fallbackLocales {
-                if supportedLocales.contains(where: { $0.identifier(.bcp47) == fallback.identifier(.bcp47) }) {
-                    localeToUse = fallback
-                    break
-                }
-            }
-        }
-
-        guard let locale = localeToUse else {
-            throw TranscriptionEngineError.localeNotSupported
         }
 
         // Reserve the locale
@@ -494,32 +493,6 @@ final class TranscriptionEngine {
         }
 
         print("[TranscriptionEngine] Using locale: \(locale.identifier)")
-    }
-
-    // MARK: - Audio Format Conversion
-
-    /// Convert Float32 audio buffer to Int16 format for SpeechAnalyzer
-    private static func convertFloat32ToInt16(buffer: AVAudioPCMBuffer, targetFormat: AVAudioFormat) -> AVAudioPCMBuffer? {
-        guard let floatData = buffer.floatChannelData?[0] else { return nil }
-
-        let frameCount = buffer.frameLength
-
-        guard let int16Buffer = AVAudioPCMBuffer(pcmFormat: targetFormat, frameCapacity: frameCount) else {
-            return nil
-        }
-        int16Buffer.frameLength = frameCount
-
-        guard let int16Data = int16Buffer.int16ChannelData?[0] else { return nil }
-
-        // Convert Float32 [-1.0, 1.0] to Int16 [-32768, 32767]
-        for i in 0..<Int(frameCount) {
-            let sample = floatData[i]
-            // Clamp to [-1.0, 1.0] then scale to Int16 range
-            let clamped = max(-1.0, min(1.0, sample))
-            int16Data[i] = Int16(clamped * 32767.0)
-        }
-
-        return int16Buffer
     }
 
     // MARK: - Cleanup
@@ -574,6 +547,7 @@ enum TranscriptionEngineError: Error, LocalizedError {
     case setupFailed(String)
     case transcriptionFailed(String)
     case localeNotSupported
+    case busy(owner: String)
 
     var errorDescription: String? {
         switch self {
@@ -585,6 +559,8 @@ enum TranscriptionEngineError: Error, LocalizedError {
             return "Transcription failed: \(reason)"
         case .localeNotSupported:
             return "No supported language locale found"
+        case .busy(let owner):
+            return "Already recording for \(owner)"
         }
     }
 }
