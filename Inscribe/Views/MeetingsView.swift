@@ -72,7 +72,10 @@ struct MeetingsView: View {
                         Button("Delete", role: .destructive) {
                             delete(meeting)
                         }
-                        .disabled(meeting == recorder.activeMeeting)
+                        // The meeting being prepared is already in this list and is not
+                        // named by activeMeeting until it records, so deleting during
+                        // "Preparing…" hands the recorder a model the store has dropped.
+                        .disabled(meeting == recorder.activeMeeting || recorder.state == .preparing)
                     }
             }
         }
@@ -387,14 +390,18 @@ private struct MeetingDetailView: View {
                 .disabled(isSummarizing)
             }
 
-            if let summary = meeting.summary, !summary.isEmpty {
-                Text(summary)
-                    .textSelection(.enabled)
-            } else if let summaryError {
+            // Above the summary rather than instead of it: a failed Regenerate leaves
+            // the previous summary on screen, and the failure has to be visible there.
+            if let summaryError {
                 Text(summaryError)
                     .font(.caption)
                     .foregroundStyle(.red)
-            } else {
+            }
+
+            if let summary = meeting.summary, !summary.isEmpty {
+                Text(summary)
+                    .textSelection(.enabled)
+            } else if summaryError == nil {
                 Text("Runs the transcript through your selected prompt, on-device.")
                     .font(.caption)
                     .foregroundStyle(.secondary)

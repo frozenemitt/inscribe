@@ -179,7 +179,11 @@ struct ImportRecordingView: View {
                     progressNote = "Separating speakers…"
                     do {
                         try await diarizer.prepare()
-                        let samples = try AudioFileSamples.read(from: url)
+                        // Decoded off the main actor: reading an hour-long file is one
+                        // synchronous pass, and this Task inherits the view's isolation.
+                        let samples = try await Task.detached {
+                            try AudioFileSamples.read(from: url)
+                        }.value
                         turns = await diarizer.diarizeWholeRecording(samples)
                     } catch {
                         // Losing speaker labels should not lose the transcript.
@@ -223,10 +227,17 @@ struct ImportRecordingView: View {
             modelContext.insert(speaker)
         }
 
+        // The same pass `rawTranscript` gets. Every reader prefers the utterances once
+        // there is attribution, so without this the meeting displays and exports the
+        // words "period" and "comma" while the raw transcript has the marks.
         for item in aligned {
             let utterance = Utterance(
                 speakerId: item.speakerId,
-                text: item.text,
+                text: TextProcessor.process(
+                    item.text,
+                    spokenPunctuation: settings.spokenPunctuationEnabled,
+                    replacements: settings.wordReplacements
+                ),
                 start: item.start,
                 end: item.end
             )

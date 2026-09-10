@@ -99,8 +99,13 @@ extension Meeting {
         let fraction = Double(offset) / Double(text.count)
         let boundary = utterance.start + (utterance.end - utterance.start) * fraction
 
+        // No speaker chosen means a new one. Splitting is only ever asked for when one
+        // block holds two people, so giving the tail back to the original speaker would
+        // make the correction change nothing.
+        let tailSpeaker = speaker ?? addSpeaker(in: context)
+
         let tailUtterance = Utterance(
-            speakerId: speaker?.speakerId ?? utterance.speakerId,
+            speakerId: tailSpeaker.speakerId,
             text: tail,
             start: boundary,
             end: utterance.end

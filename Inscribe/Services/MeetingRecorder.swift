@@ -64,6 +64,21 @@ final class MeetingRecorder {
     /// Audio seconds captured in sessions that have already ended.
     private var completedAudioSeconds: TimeInterval = 0
 
+    /// The save started by `stop()`, while it is still running.
+    ///
+    /// Quitting can call `stop()` a second time while the first one is mid-save. That
+    /// caller waits on this rather than being turned away by the guard, which would
+    /// report the meeting written and let the app terminate through the middle of it.
+    private var finishTask: Task<Void, Never>?
+
+    /// Ordered handoff of captured audio to the diarizer.
+    ///
+    /// The tap runs on the audio thread and the diarizer is an actor, so the handoff
+    /// has to be asynchronous. A task per buffer arrives in whatever order the tasks
+    /// were scheduled, which scrambles the 16 kHz stream the clustering reads.
+    private var diarizerFeed: AsyncStream<[Float]>.Continuation?
+    private var diarizerFeedTask: Task<Void, Never>?
+
     /// Live text: everything kept so far, plus whatever this session has heard.
     var liveTranscript: String {
         let current = engine.currentTranscript + engine.volatileText
@@ -199,15 +214,34 @@ final class MeetingRecorder {
         let wantsAudio = settings.keepMeetingAudio
         let audioConverter = converter
 
+        let (feed, continuation) = AsyncStream<[Float]>.makeStream()
+        diarizerFeed = continuation
+        diarizerFeedTask = Task.detached {
+            for await samples in feed {
+                await diarizer.append(samples)
+            }
+        }
+
         engine.audioTap = { buffer in
             if wantsAudio {
                 writer.append(buffer)
             }
             if wantsDiarization, let audioConverter,
                let samples = audioConverter.floats(from: buffer) {
-                Task { await diarizer.append(samples) }
+                continuation.yield(samples)
             }
         }
+    }
+
+    /// Wait for every buffer already captured to reach the diarizer.
+    ///
+    /// Anything that reads the diarizer's clock or asks it for turns has to run after
+    /// the queued audio, or it measures a meeting shorter than the one recorded.
+    private func drainDiarizerFeed() async {
+        diarizerFeed?.finish()
+        await diarizerFeedTask?.value
+        diarizerFeed = nil
+        diarizerFeedTask = nil
     }
 
     /// Stop capturing without ending the meeting.
@@ -227,6 +261,7 @@ final class MeetingRecorder {
         // recording and fed to its diarizer, shifting every later timestamp.
         engine.audioTap = nil
         engine.collectTimedSegments = false
+        await drainDiarizerFeed()
 
         state = .paused
         AudioFeedbackService.shared.playIfEnabled(.recordingStopped, settings: settings)
@@ -252,6 +287,13 @@ final class MeetingRecorder {
                 inputDeviceUID: meetingInputDeviceUID()
             )
         } catch {
+            // Put back the disconnection pause made. The meeting stays paused, and a
+            // tap left attached would write the next dictation into this meeting's
+            // recording and feed it to its diarizer.
+            engine.audioTap = nil
+            engine.collectTimedSegments = false
+            await drainDiarizerFeed()
+
             lastError = error.localizedDescription
             AudioFeedbackService.shared.playIfEnabled(.error, settings: settings)
             print("[MeetingRecorder] Could not resume: \(error)")
@@ -292,17 +334,33 @@ final class MeetingRecorder {
 
     /// End the meeting, align speakers to text, and save.
     func stop(in context: ModelContext) async {
+        // Quitting calls this while the Stop button's save is still running. That
+        // caller has to wait for the save in flight; turning it away here reports a
+        // meeting written that is still halfway through being written.
+        if state == .finishing {
+            await finishTask?.value
+            return
+        }
+
         guard state == .recording || state == .paused, let meeting = activeMeeting else { return }
 
         let wasRecording = state == .recording
         state = .finishing
 
+        let task = Task { await self.finish(meeting, wasRecording: wasRecording, in: context) }
+        finishTask = task
+        await task.value
+        finishTask = nil
+    }
+
+    private func finish(_ meeting: Meeting, wasRecording: Bool, in context: ModelContext) async {
         if wasRecording {
             AudioFeedbackService.shared.playIfEnabled(.recordingStopped, settings: settings)
             let transcript = (try? await engine.stopRecording(owner: .meeting)) ?? engine.currentTranscript
             harvestSession(transcript: transcript)
         }
 
+        await drainDiarizerFeed()
         let turns = diarizationActive ? await diarizer.finish() : []
 
         meeting.endedAt = Date()
@@ -373,10 +431,17 @@ final class MeetingRecorder {
             context.insert(speaker)
         }
 
+        // The same pass `rawTranscript` gets. Every reader prefers the utterances once
+        // there is attribution, so without this the meeting displays and exports the
+        // words "period" and "comma" while the raw transcript has the marks.
         for item in aligned {
             let utterance = Utterance(
                 speakerId: item.speakerId,
-                text: item.text,
+                text: TextProcessor.process(
+                    item.text,
+                    spokenPunctuation: settings.spokenPunctuationEnabled,
+                    replacements: settings.wordReplacements
+                ),
                 start: item.start,
                 end: item.end
             )
@@ -393,6 +458,10 @@ final class MeetingRecorder {
         guard !body.isEmpty else { return }
 
         let summary = try await aiProcessor.process(text: body, promptId: settings.selectedPromptId)
+
+        // The summary takes long enough that the meeting can be deleted while it runs.
+        guard !meeting.isDeleted else { return }
+
         meeting.summary = summary
         try? context.save()
     }
@@ -402,6 +471,7 @@ final class MeetingRecorder {
     private func teardown() async {
         engine.audioTap = nil
         engine.collectTimedSegments = false
+        await drainDiarizerFeed()
         await diarizer.reset()
         diarizationActive = false
 
