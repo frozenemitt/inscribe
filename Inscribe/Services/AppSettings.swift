@@ -492,17 +492,39 @@ extension AppSettings {
     }
 
     /// US-layout virtual key codes for the characters a hotkey may use.
+    private static let keyCodes: [Character: CGKeyCode] = [
+        "a": 0,  "s": 1,  "d": 2,  "f": 3,  "h": 4,  "g": 5,  "z": 6,  "x": 7,
+        "c": 8,  "v": 9,  "b": 11, "q": 12, "w": 13, "e": 14, "r": 15, "y": 16,
+        "t": 17, "1": 18, "2": 19, "3": 20, "4": 21, "6": 22, "5": 23, "=": 24,
+        "9": 25, "7": 26, "-": 27, "8": 28, "0": 29, "]": 30, "o": 31, "u": 32,
+        "[": 33, "i": 34, "p": 35, "l": 37, "j": 38, "'": 39, "k": 40, ";": 41,
+        "\\": 42, ",": 43, "/": 44, "n": 45, "m": 46, ".": 47, " ": 49
+    ]
+
     private static func keyCode(for character: Character) -> CGKeyCode? {
-        let map: [Character: CGKeyCode] = [
-            "a": 0,  "s": 1,  "d": 2,  "f": 3,  "h": 4,  "g": 5,  "z": 6,  "x": 7,
-            "c": 8,  "v": 9,  "b": 11, "q": 12, "w": 13, "e": 14, "r": 15, "y": 16,
-            "t": 17, "1": 18, "2": 19, "3": 20, "4": 21, "6": 22, "5": 23, "=": 24,
-            "9": 25, "7": 26, "-": 27, "8": 28, "0": 29, "]": 30, "o": 31, "u": 32,
-            "[": 33, "i": 34, "p": 35, "l": 37, "j": 38, "'": 39, "k": 40, ";": 41,
-            "\\": 42, ",": 43, "/": 44, "n": 45, "m": 46, ".": 47, " ": 49
-        ]
         guard let lowered = character.lowercased().first else { return nil }
-        return map[lowered]
+        return keyCodes[lowered]
+    }
+
+    /// Write a captured keystroke the way `hotkeyString` stores it, e.g. "⌃⌥⌘C".
+    ///
+    /// Nil when the keystroke cannot be a trigger: a key outside the table above, or
+    /// one pressed without ⌃, ⌥ or ⌘, which would swallow that plain keystroke in
+    /// every app on the machine.
+    static func hotkeyString(forKeyCode keyCode: CGKeyCode, modifiers: CGEventFlags) -> String? {
+        let control = modifiers.contains(.maskControl)
+        let option = modifiers.contains(.maskAlternate)
+        let command = modifiers.contains(.maskCommand)
+        guard control || option || command else { return nil }
+
+        guard let character = keyCodes.first(where: { $0.value == keyCode })?.key else { return nil }
+
+        var parts = ""
+        if control { parts += "⌃" }
+        if option { parts += "⌥" }
+        if modifiers.contains(.maskShift) { parts += "⇧" }
+        if command { parts += "⌘" }
+        return parts + String(character).uppercased()
     }
 }
 #endif

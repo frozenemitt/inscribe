@@ -161,7 +161,7 @@ enum TextInsertionService {
         // Nothing was typed into an app, so there is nothing for ⌘Z to take back.
         lastInsertion = nil
 
-        guard await awaitFocusedTextElement(in: targetApp) != nil else {
+        guard let field = await awaitFocusedTextElement(in: targetApp) else {
             log.notice("""
                 No focused text field in \(targetApp?.localizedName ?? "target", privacy: .public) \
                 — falling back to clipboard
@@ -179,6 +179,9 @@ enum TextInsertionService {
 
         let previousClipboard = restoreClipboard ? ClipboardService.read() : nil
 
+        // Read before pasting, so the field can be compared against itself afterwards.
+        let fieldBeforePaste = state(of: field)
+
         ClipboardService.copy(text)
 
         // Give the pasteboard a moment to settle before the receiving app reads it.
@@ -189,17 +192,22 @@ enum TextInsertionService {
             return .copiedToClipboard(reason: .insertionFailed)
         }
 
+        guard await pasteLanded(in: field, changedFrom: fieldBeforePaste) else {
+            log.notice("""
+                ⌘V did nothing in \(appName, privacy: .public) \
+                — leaving the transcript on the clipboard
+                """)
+            return .copiedToClipboard(reason: .insertionFailed)
+        }
+
         if autoSubmit {
-            // Let the paste land before the Return, or fast apps race the two.
-            try? await Task.sleep(for: .milliseconds(120))
             postReturnKeystroke(withShift: submitUsesShift)
             log.debug("Pressed \(submitUsesShift ? "Shift+Return" : "Return", privacy: .public)")
         }
 
         if let previousClipboard {
-            // Long enough that the receiving app has read the pasteboard. Too short
-            // and the paste picks up the restored value instead of the transcript.
-            try? await Task.sleep(for: .milliseconds(600))
+            // Safe to put back now: the text is in the field, so the app has already
+            // read the pasteboard.
             ClipboardService.copy(previousClipboard)
             log.debug("Restored previous clipboard")
         }
@@ -215,6 +223,54 @@ enum TextInsertionService {
 
         log.notice("Inserted into \(appName, privacy: .public)")
         return .inserted(appName: appName)
+    }
+
+    /// The two things about a text field that a paste always changes.
+    ///
+    /// Both are read, because apps differ over which one they publish: native controls
+    /// give their text as the value, while Electron and browser fields present a
+    /// selection range instead.
+    private struct FieldState: Equatable {
+        var text: String?
+        var caret: Int?
+    }
+
+    private static func state(of field: AXUIElement) -> FieldState {
+        FieldState(
+            text: copyAttribute(field, kAXValueAttribute as String) as? String,
+            caret: caretLocation(of: field)
+        )
+    }
+
+    private static func caretLocation(of field: AXUIElement) -> Int? {
+        guard let raw = copyAttribute(field, kAXSelectedTextRangeAttribute as String),
+              CFGetTypeID(raw) == AXValueGetTypeID() else { return nil }
+
+        var range = CFRange()
+        guard AXValueGetValue(raw as! AXValue, .cfRange, &range) else { return nil }
+        return range.location
+    }
+
+    /// Whether the ⌘V actually put the text into `field`.
+    ///
+    /// An element can advertise a text range, accept the keystroke, and do nothing
+    /// with it — a web page and a read-only document both look like a text field from
+    /// the outside. Reading the field back is the only honest answer, and it has to be
+    /// asked before the clipboard is restored: otherwise the previous contents go back
+    /// over a transcript that never landed anywhere, and the words are gone.
+    ///
+    /// Polled rather than slept through once, because apps apply a paste anywhere
+    /// between immediately and a couple of hundred milliseconds later.
+    ///
+    /// A field that changes in neither way counts as a failure. Being wrong there
+    /// costs one clipboard left unrestored; being wrong the other way costs the user
+    /// their dictation.
+    private static func pasteLanded(in field: AXUIElement, changedFrom before: FieldState) async -> Bool {
+        for _ in 0..<12 {
+            try? await Task.sleep(for: .milliseconds(30))
+            if state(of: field) != before { return true }
+        }
+        return false
     }
 
     // MARK: - Focus Inspection

@@ -234,6 +234,16 @@ struct MenuBarView: View {
         .padding(.vertical, 4)
     }
 
+    /// Open one of the app's windows and bring it to the front.
+    ///
+    /// A menu bar app is not the active application while its popover is showing, so
+    /// `openWindow` on its own puts the new window behind whatever the user was
+    /// looking at, and they have to go and find it.
+    private func show(_ windowID: String) {
+        openWindow(id: windowID)
+        NSApp.activate()
+    }
+
     // MARK: - Meeting Section
 
     /// Meeting mode is deliberately its own control rather than a variant of the
@@ -244,7 +254,7 @@ struct MenuBarView: View {
                 if meetingRecorder.hasActiveMeeting {
                     Task { await meetingRecorder.stop(in: modelContext) }
                 } else {
-                    openWindow(id: ScribeApp.meetingsWindowID)
+                    show(ScribeApp.meetingsWindowID)
                     Task { await meetingRecorder.start(in: modelContext) }
                 }
             } label: {
@@ -282,7 +292,7 @@ struct MenuBarView: View {
             }
 
             Button {
-                openWindow(id: ScribeApp.meetingsWindowID)
+                show(ScribeApp.meetingsWindowID)
             } label: {
                 HStack {
                     Image(systemName: "list.bullet.rectangle")
@@ -295,7 +305,7 @@ struct MenuBarView: View {
             .padding(.vertical, 4)
 
             Button {
-                openWindow(id: ScribeApp.importWindowID)
+                show(ScribeApp.importWindowID)
             } label: {
                 HStack {
                     Image(systemName: "waveform.badge.plus")
@@ -308,7 +318,7 @@ struct MenuBarView: View {
             .padding(.vertical, 4)
 
             Button {
-                openWindow(id: ScribeApp.historyWindowID)
+                show(ScribeApp.historyWindowID)
             } label: {
                 HStack {
                     Image(systemName: "clock.arrow.circlepath")

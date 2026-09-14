@@ -1035,7 +1035,7 @@ struct HotkeySettingsView: View {
     @Environment(GlobalHotkeyMonitor.self) private var hotkeyMonitor
 
     @State private var isRecordingHotkey = false
-    @State private var eventMonitor: Any?
+    @State private var captureError: String?
     @State private var isTrusted = AccessibilityPermission.isTrusted
 
     /// Re-check trust while the window is open — the user grants it in System Settings,
@@ -1119,14 +1119,16 @@ struct HotkeySettingsView: View {
             }
         }
         .onChange(of: isRecordingHotkey) { _, recording in
-            if recording { startMonitoring() } else { stopMonitoring() }
+            if recording { startCapturing() } else { hotkeyMonitor.endCapture() }
         }
         .onChange(of: settings.useGlobeKey) { _, _ in rearm() }
         .onChange(of: settings.hotkeyString) { _, _ in rearm() }
         .onChange(of: settings.hotkeyActivationModeRaw) { _, _ in rearm() }
         .onChange(of: settings.undoHotkeyEnabled) { _, _ in rearm() }
         .onDisappear {
-            stopMonitoring()
+            // Capture swallows every keystroke on the machine, so it must never
+            // outlive the screen that turned it on.
+            hotkeyMonitor.endCapture()
             isRecordingHotkey = false
         }
     }
@@ -1181,9 +1183,15 @@ struct HotkeySettingsView: View {
                 isRecordingHotkey.toggle()
             }
 
-            Text("Use at least one modifier (⌃, ⌥, or ⌘).")
-                .font(.caption)
-                .foregroundStyle(.secondary)
+            if let captureError {
+                Text(captureError)
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+            } else {
+                Text("Use at least one modifier (⌃, ⌥, or ⌘). Escape cancels.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
         }
     }
 
@@ -1193,36 +1201,33 @@ struct HotkeySettingsView: View {
 
     // MARK: - Hotkey Recording
 
-    private func startMonitoring() {
-        stopMonitoring()
+    /// Listen for the combination the user wants, through the tap that is already
+    /// watching the keyboard.
+    ///
+    /// The tap sees keystrokes wherever they are typed, so this no longer depends on
+    /// the settings window holding keyboard focus — which is what a menu bar app
+    /// cannot promise, and why the old local monitor caught nothing.
+    private func startCapturing() {
+        captureError = nil
 
-        // A MenuBarExtra app is not reliably frontmost when Settings opens, and a
-        // local monitor only sees events when it is.
-        NSApp.activate()
-
-        // Stop the tap so the current hotkey does not fire while recording a new one.
-        hotkeyMonitor.stop()
-
-        eventMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
-            if event.keyCode == 53 {  // Escape
+        hotkeyMonitor.beginCapture { keyCode, modifiers in
+            if keyCode == 53 {  // Escape
                 isRecordingHotkey = false
-                return nil
+                return
             }
 
-            let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
-            let hasModifier = flags.contains(.control) || flags.contains(.option) || flags.contains(.command)
-            guard hasModifier, let char = characterForKeyCode(event.keyCode) else { return nil }
+            guard let combination = AppSettings.hotkeyString(
+                forKeyCode: keyCode,
+                modifiers: modifiers
+            ) else {
+                // Stay armed and say why, rather than swallowing the keystroke and
+                // leaving the user pressing keys at a screen that never answers.
+                captureError = "That one cannot be a hotkey. Use a letter, number or punctuation key with ⌃, ⌥ or ⌘."
+                return
+            }
 
-            var parts = ""
-            if flags.contains(.control) { parts += "⌃" }
-            if flags.contains(.option) { parts += "⌥" }
-            if flags.contains(.shift) { parts += "⇧" }
-            if flags.contains(.command) { parts += "⌘" }
-            parts += String(char).uppercased()
-
-            settings.hotkeyString = parts
+            settings.hotkeyString = combination
             isRecordingHotkey = false
-            return nil
         }
     }
 
@@ -1236,32 +1241,6 @@ struct HotkeySettingsView: View {
         }
     }
 
-    private func stopMonitoring() {
-        if let monitor = eventMonitor {
-            NSEvent.removeMonitor(monitor)
-            eventMonitor = nil
-        }
-
-        // Re-arm with whatever the settings now say, whether or not a new key was captured.
-        hotkeyMonitor.trigger = settings.hotkeyTrigger
-        hotkeyMonitor.activationMode = settings.hotkeyActivationMode
-        if !hotkeyMonitor.isRunning {
-            hotkeyMonitor.start()
-        }
-    }
-
-    private func characterForKeyCode(_ keyCode: UInt16) -> Character? {
-        let map: [UInt16: Character] = [
-            0: "a", 1: "s", 2: "d", 3: "f", 4: "h", 5: "g", 6: "z", 7: "x",
-            8: "c", 9: "v", 11: "b", 12: "q", 13: "w", 14: "e", 15: "r",
-            16: "y", 17: "t", 18: "1", 19: "2", 20: "3", 21: "4", 22: "6",
-            23: "5", 24: "=", 25: "9", 26: "7", 27: "-", 28: "8", 29: "0",
-            30: "]", 31: "o", 32: "u", 33: "[", 34: "i", 35: "p", 37: "l",
-            38: "j", 39: "'", 40: "k", 41: ";", 42: "\\", 43: ",", 44: "/",
-            45: "n", 46: "m", 47: ".", 49: " "
-        ]
-        return map[keyCode]
-    }
 }
 #endif
 

@@ -43,6 +43,8 @@ private let relevantModifiers: CGEventFlags = [
 /// What a tapped keystroke turned out to mean.
 private enum HotkeyAction: Sendable {
     case activate, deactivate, toggle, cancel, undo
+    /// The settings screen is waiting for a new binding, and this was the keystroke.
+    case capture(keyCode: CGKeyCode, modifiers: CGEventFlags)
 }
 
 /// Everything the tap callback reads, kept where the tap's own thread can reach it.
@@ -53,6 +55,7 @@ private struct TapState: Sendable {
     var suppressTriggerKey = true
     var isRecording = false
     var isKeyDown = false
+    var isCapturing = false
 }
 
 /// System-wide hotkey monitor built on a CGEventTap.
@@ -132,6 +135,8 @@ final class GlobalHotkeyMonitor {
     var onCancel: (() -> Void)?
     /// The undo shortcut was pressed.
     var onUndo: (() -> Void)?
+    /// A keystroke arrived while the settings screen was recording a new binding.
+    var onCapture: ((CGKeyCode, CGEventFlags) -> Void)?
 
     // MARK: - Tap Internals
 
@@ -222,6 +227,26 @@ final class GlobalHotkeyMonitor {
         isRunning = false
     }
 
+    /// Report the next keystrokes to `handler` instead of acting on them, so the
+    /// settings screen can record a new binding.
+    ///
+    /// Read from the tap rather than from an `NSEvent` monitor in the settings window:
+    /// the tap sees every keystroke on the machine, so the user's chosen combination
+    /// is captured whether or not that window happens to hold keyboard focus. Every
+    /// keystroke is swallowed while this is on, so none of them leak into the app
+    /// behind the settings window.
+    func beginCapture(_ handler: @escaping (CGKeyCode, CGEventFlags) -> Void) {
+        onCapture = handler
+        if !isRunning { start() }
+        tapState.withLock { $0.isCapturing = true }
+    }
+
+    /// Go back to treating keystrokes as hotkeys.
+    func endCapture() {
+        tapState.withLock { $0.isCapturing = false }
+        onCapture = nil
+    }
+
     // MARK: - Tap Thread
 
     /// Decide what a tapped keystroke means. Returns true when it should be swallowed.
@@ -235,6 +260,15 @@ final class GlobalHotkeyMonitor {
         isRepeat: Bool
     ) -> Bool {
         let (swallow, action) = tapState.withLock { state -> (Bool, HotkeyAction?) in
+            // Recording a new binding takes the keyboard whole, so the combination the
+            // user presses cannot also fire the old hotkey or type into another app.
+            // Modifiers on their own pass through: they are the user still assembling
+            // the combination, and the Globe key must not start a recording here.
+            if state.isCapturing {
+                guard type == .keyDown, !isRepeat else { return (type == .keyDown, nil) }
+                return (true, .capture(keyCode: keyCode, modifiers: flags))
+            }
+
             switch type {
             case .flagsChanged:
                 guard case .globe = state.trigger, keyCode == fnKeyCode else { return (false, nil) }
@@ -309,6 +343,7 @@ final class GlobalHotkeyMonitor {
         case .toggle: onToggle?()
         case .cancel: onCancel?()
         case .undo: onUndo?()
+        case let .capture(keyCode, modifiers): onCapture?(keyCode, modifiers)
         }
     }
 }
