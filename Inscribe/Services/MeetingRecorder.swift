@@ -118,7 +118,17 @@ final class MeetingRecorder {
     /// The `Meeting` exists in the store from the first second, so a crash mid-meeting
     /// leaves a titled, findable record rather than nothing.
     func start(in context: ModelContext) async {
-        guard state == .idle, !engine.isRecording else { return }
+        guard state == .idle else { return }
+
+        // Claimed here, before the diarization models load, because that load takes
+        // seconds on a cold start. Left unclaimed, the engine looks free for all of
+        // it, and a dictation taken in that window wins the race — the meeting's own
+        // start then throws and deletes the meeting it had already saved.
+        guard engine.reserve(owner: .meeting) else {
+            lastError = "Inscribe is already recording. Finish that first."
+            AudioFeedbackService.shared.playIfEnabled(.error, settings: settings)
+            return
+        }
 
         state = .preparing
 
@@ -271,14 +281,17 @@ final class MeetingRecorder {
     func pause() async {
         guard state == .recording else { return }
 
-        let transcript = (try? await engine.stopRecording(owner: .meeting)) ?? engine.currentTranscript
-        harvestSession(transcript: transcript)
-
-        // Disconnected while paused: the engine re-reads audioTap on every start, so a
-        // dictation taken during the pause would otherwise be written into the meeting's
+        // Disconnected before the stop is awaited, not after. The engine reads
+        // `audioTap` once when a session starts, so clearing it here leaves this
+        // session's own fan-out intact while making sure the next session — a
+        // dictation taken during the pause — is not written into this meeting's
         // recording and fed to its diarizer, shifting every later timestamp.
         engine.audioTap = nil
         engine.collectTimedSegments = false
+
+        let transcript = (try? await engine.stopRecording(owner: .meeting)) ?? engine.currentTranscript
+        harvestSession(transcript: transcript)
+
         await drainDiarizerFeed()
 
         state = .paused
@@ -381,6 +394,13 @@ final class MeetingRecorder {
     private func finish(_ meeting: Meeting, wasRecording: Bool, in context: ModelContext) async {
         if wasRecording {
             AudioFeedbackService.shared.playIfEnabled(.recordingStopped, settings: settings)
+
+            // Disconnected before the stop is awaited, for the same reason as in
+            // pause(): this session keeps its own fan-out, and anything started
+            // afterwards must not be recorded into this meeting.
+            engine.audioTap = nil
+            engine.collectTimedSegments = false
+
             let transcript = (try? await engine.stopRecording(owner: .meeting)) ?? engine.currentTranscript
             harvestSession(transcript: transcript)
         }

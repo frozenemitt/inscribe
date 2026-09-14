@@ -126,6 +126,15 @@ struct MenuBarView: View {
 
     // MARK: - Recording Button
 
+    /// The engine is busy with something that is not a dictation — a meeting.
+    ///
+    /// Asked of the coordinator rather than the engine: `transcriptionEngine.isRecording`
+    /// is true for meetings too, which had this button offering to stop a recording it
+    /// could not stop and then refusing the click in silence.
+    private var blockedByMeeting: Bool {
+        transcriptionEngine.isBusy && !coordinator.isRecording
+    }
+
     private var recordingButton: some View {
         Button {
             Task {
@@ -133,11 +142,11 @@ struct MenuBarView: View {
             }
         } label: {
             HStack {
-                Image(systemName: transcriptionEngine.isRecording ? "stop.fill" : "record.circle")
+                Image(systemName: coordinator.isRecording ? "stop.fill" : "record.circle")
                     .font(.title3)
-                    .foregroundStyle(transcriptionEngine.isRecording ? .red : .primary)
+                    .foregroundStyle(coordinator.isRecording ? .red : .primary)
 
-                Text(transcriptionEngine.isRecording ? "Stop Recording" : "Start Recording")
+                Text(coordinator.isRecording ? "Stop Recording" : "Start Recording")
                     .frame(maxWidth: .infinity, alignment: .leading)
 
                 Text(triggerLabel)
@@ -151,9 +160,10 @@ struct MenuBarView: View {
         .padding(.horizontal, 8)
         .background(
             RoundedRectangle(cornerRadius: 6)
-                .fill(transcriptionEngine.isRecording ? Color.red.opacity(0.1) : Color.clear)
+                .fill(coordinator.isRecording ? Color.red.opacity(0.1) : Color.clear)
         )
-        .disabled(aiProcessor.isProcessing)
+        .disabled(aiProcessor.isProcessing || blockedByMeeting)
+        .help(blockedByMeeting ? "A meeting is using the microphone." : "")
     }
 
     // MARK: - Prompt Section
@@ -268,7 +278,7 @@ struct MenuBarView: View {
             }
             .buttonStyle(.plain)
             .padding(.vertical, 4)
-            .disabled(transcriptionEngine.isRecording && !meetingRecorder.isRecording)
+            .disabled(transcriptionEngine.isBusy && !meetingRecorder.hasActiveMeeting)
 
             if meetingRecorder.hasActiveMeeting {
                 Button {

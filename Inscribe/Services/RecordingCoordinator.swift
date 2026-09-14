@@ -56,6 +56,20 @@ final class RecordingCoordinator {
     /// Stops a recording that has run past `settings.maxRecordingSeconds`.
     private var maxDurationTask: Task<Void, Never>?
 
+    /// The start still coming up, if there is one.
+    ///
+    /// Bringing the engine up takes a moment, and a push-to-talk tap can be shorter
+    /// than that. The release waits here instead of being dropped, which is what used
+    /// to leave the microphone live with nobody holding the key.
+    private var startTask: Task<Void, Never>?
+
+    /// The engine teardown still finishing, if there is one.
+    ///
+    /// Only the engine's part, not the AI pass that follows it: the next dictation
+    /// should wait about a tenth of a second for the microphone, not several seconds
+    /// for a model to answer.
+    private var stopTask: Task<String, any Error>?
+
     /// True only while *this* coordinator's dictation is running.
     ///
     /// Not `engine.isRecording`: the engine is shared with meeting mode, and a meeting
@@ -99,6 +113,11 @@ final class RecordingCoordinator {
     // MARK: - Recording Control
 
     func toggle() async {
+        // A second press during the start is the user asking to stop, so let the
+        // session finish coming up and then end it, rather than reading the
+        // half-built state as "not recording" and opening a second microphone.
+        if let startTask { await startTask.value }
+
         if isRecording {
             await stopAndProcess()
         } else {
@@ -107,8 +126,22 @@ final class RecordingCoordinator {
     }
 
     func start() async {
-        // Refuse to start over anyone's session, including a meeting's.
-        guard !engine.isRecording else { return }
+        // Let the previous dictation hand the engine back before claiming it. Without
+        // this the new session cleared the old one's transcript out from under it and
+        // both sets of words were lost.
+        if let stopTask { _ = try? await stopTask.value }
+
+        // Refuse to start over anyone's session, including a meeting's, and including
+        // one that is still coming up.
+        guard !engine.isBusy else { return }
+
+        let task = Task { await self.begin() }
+        startTask = task
+        await task.value
+        startTask = nil
+    }
+
+    private func begin() async {
 
         #if os(macOS)
         // Captured before we touch anything, so a menu bar click that steals focus
@@ -153,6 +186,10 @@ final class RecordingCoordinator {
 
     /// Stop, transcribe, optionally run the AI pass, then deliver the text.
     func stopAndProcess() async {
+        // A release that lands while the engine is still coming up waits for it,
+        // rather than being dropped and leaving the microphone running.
+        if let startTask { await startTask.value }
+
         guard isRecording else { return }
         maxDurationTask?.cancel()
         maxDurationTask = nil
@@ -169,9 +206,13 @@ final class RecordingCoordinator {
         #endif
 
         let rawTranscript: String
+        let stop = Task { try await engine.stopRecording(owner: .dictation) }
+        stopTask = stop
         do {
-            rawTranscript = try await engine.stopRecording(owner: .dictation)
+            rawTranscript = try await stop.value
+            stopTask = nil
         } catch {
+            stopTask = nil
             #if os(macOS)
             overlay.hide()
             #endif
@@ -279,7 +320,8 @@ final class RecordingCoordinator {
     }
 
     /// Throw away an in-flight recording without producing any text.
-    func cancel() {
+    func cancel() async {
+        if let startTask { await startTask.value }
         guard isRecording else { return }
         maxDurationTask?.cancel()
         maxDurationTask = nil

@@ -186,6 +186,7 @@ struct ScribeApp: App {
             MeetingsView()
                 .environment(settings)
                 .environment(meetingRecorder)
+                .environment(transcriptionEngine)
                 .modelContainer(modelContainer)
         }
         .defaultSize(width: 900, height: 600)
@@ -249,7 +250,7 @@ struct ScribeApp: App {
             Task { @MainActor in await coordinator.toggle() }
         }
         hotkeyMonitor.onCancel = {
-            Task { @MainActor in coordinator.cancel() }
+            Task { @MainActor in await coordinator.cancel() }
         }
         // Dictation only. The tap swallows Escape while this is true, so reporting a
         // meeting here would eat the key in whatever app the user is actually using,

@@ -13,7 +13,32 @@ final class TranscriptionEngine {
 
     // MARK: - Published State
 
-    private(set) var isRecording = false
+    /// How far along the one session this engine runs is.
+    ///
+    /// A plain `isRecording` flag could only be true once everything was built and
+    /// false the moment teardown began, which left the engine looking free for the
+    /// few hundred milliseconds either side. Every guard that asked got the wrong
+    /// answer there: a released hotkey did not stop a session that was still coming
+    /// up, and a second dictation walked into the middle of the first one's finish
+    /// and took its transcript with it.
+    enum SessionPhase: Sendable, Equatable {
+        /// Nobody holds the engine.
+        case idle
+        /// Claimed and being built, or reserved by a caller that is not ready yet.
+        case starting
+        /// Live and transcribing.
+        case recording
+        /// Finalizing. The claim is still held, so nothing else may start.
+        case stopping
+    }
+
+    private(set) var phase: SessionPhase = .idle
+
+    /// Whether audio is being transcribed right now.
+    var isRecording: Bool { phase == .recording }
+
+    /// Whether anyone holds the engine, at any stage. This is the claim guard.
+    var isBusy: Bool { phase != .idle }
 
     /// Who a running session belongs to.
     ///
@@ -22,11 +47,6 @@ final class TranscriptionEngine {
     /// down the meeting's session while the meeting UI carries on as if recording.
     private(set) var owner: SessionOwner?
 
-    /// Identifies the current session across suspension points.
-    ///
-    /// `stopRecording` awaits several times. A new session started during one of those
-    /// awaits would otherwise be torn down by the older call finishing its work.
-    private var sessionID = UUID()
     private(set) var currentTranscript = ""
     private(set) var volatileText = ""  // Live, unconfirmed text
     private(set) var error: TranscriptionEngineError?
@@ -96,6 +116,28 @@ final class TranscriptionEngine {
 
     // MARK: - Public API
 
+    /// Claim the engine before the caller is ready to record.
+    ///
+    /// Meeting mode loads its diarization models first, which takes seconds on a cold
+    /// start. Without a claim the engine looks free for that whole stretch, and a
+    /// dictation taken in the middle of it wins the race and leaves the meeting
+    /// deleted before it began.
+    ///
+    /// Returns false when someone else already holds the engine.
+    func reserve(owner: SessionOwner) -> Bool {
+        guard phase == .idle else { return false }
+        self.owner = owner
+        phase = .starting
+        return true
+    }
+
+    /// Give back a claim that never became a recording.
+    func releaseReservation(owner: SessionOwner) {
+        guard phase == .starting, self.owner == owner else { return }
+        self.owner = nil
+        phase = .idle
+    }
+
     /// Start recording and transcribing audio
     /// - Parameters:
     ///   - contextualStrings: Terms to bias the recognizer toward — names, jargon.
@@ -108,8 +150,16 @@ final class TranscriptionEngine {
         // Thrown rather than returned: a caller that silently "succeeds" here goes on to
         // set up its own UI for a session that does not exist, and only finds out when
         // the recording turns out to be empty.
-        guard !isRecording else {
-            throw TranscriptionEngineError.busy(owner: self.owner?.rawValue ?? "another session")
+        //
+        // Already `.starting` under this owner is the one exception: that is a caller
+        // that reserved the engine and has now finished getting ready.
+        let heldByThisCaller = (phase == .starting && self.owner == owner)
+        if !heldByThisCaller {
+            guard phase == .idle else {
+                throw TranscriptionEngineError.busy(owner: self.owner?.rawValue ?? "another session")
+            }
+            self.owner = owner
+            phase = .starting
         }
 
         print("[TranscriptionEngine] Starting recording...")
@@ -126,6 +176,7 @@ final class TranscriptionEngine {
 
         // Check authorization
         guard await checkAuthorization() else {
+            release()
             throw TranscriptionEngineError.notAuthorized
         }
 
@@ -136,6 +187,7 @@ final class TranscriptionEngine {
             // Never leave a started analyzer behind. Releasing one while its input
             // task is still reading traps inside SpeechAnalyzer.analyzeSequence.
             teardownSession()
+            release()
             throw error
         }
 
@@ -147,6 +199,7 @@ final class TranscriptionEngine {
         } catch {
             helper.stopCapture()
             teardownSession()
+            release()
             throw error
         }
 
@@ -192,16 +245,14 @@ final class TranscriptionEngine {
             print("[TranscriptionEngine] Processing ended - total: \(bufferCount), success: \(successCount)")
         }
 
-        self.owner = owner
-        sessionID = UUID()
-        isRecording = true
+        phase = .recording
         print("[TranscriptionEngine] Recording started for \(owner.rawValue)")
     }
 
     /// Stop recording and return the final transcript
     @discardableResult
     func stopRecording(owner: SessionOwner = .dictation) async throws -> String {
-        guard isRecording else {
+        guard phase == .recording else {
             print("[TranscriptionEngine] Not recording, ignoring stop request")
             return currentTranscript
         }
@@ -214,9 +265,10 @@ final class TranscriptionEngine {
         }
 
         print("[TranscriptionEngine] Stopping recording...")
-        let stoppingSession = sessionID
-        isRecording = false
-        self.owner = nil
+
+        // Held, not released: nothing else may take the engine until this session has
+        // finished handing back its words.
+        phase = .stopping
 
         // Stop audio capture helper
         audioCaptureHelper?.stopCapture()
@@ -236,15 +288,6 @@ final class TranscriptionEngine {
             self.error = .transcriptionFailed(error.localizedDescription)
         }
 
-        // Checked before anything is cancelled, not after. A session started while the
-        // finalize above was awaiting owns `recognitionTask` and `currentTranscript` by
-        // now, so cancelling here would kill the new recording, and returning the
-        // transcript would hand this caller the new session's words.
-        guard sessionID == stoppingSession else {
-            print("[TranscriptionEngine] A newer session started; leaving it alone")
-            return ""
-        }
-
         // Cancel recognition task and give it time to clean up
         recognitionTask?.cancel()
         try? await Task.sleep(nanoseconds: 100_000_000)  // 100ms for cleanup
@@ -258,13 +301,21 @@ final class TranscriptionEngine {
             volatileText = ""
         }
 
+        release()
+
         print("[TranscriptionEngine] Recording stopped. Final transcript: \(currentTranscript.prefix(50))...")
         return currentTranscript
     }
 
+    /// Hand the engine back.
+    private func release() {
+        self.owner = nil
+        phase = .idle
+    }
+
     /// Cancel recording without returning transcript
     func cancelRecording(owner: SessionOwner = .dictation) {
-        guard isRecording else { return }
+        guard phase == .starting || phase == .recording else { return }
 
         guard self.owner == owner else {
             print("[TranscriptionEngine] \(owner.rawValue) tried to cancel a \(self.owner?.rawValue ?? "?") session")
@@ -272,9 +323,7 @@ final class TranscriptionEngine {
         }
 
         print("[TranscriptionEngine] Cancelling recording...")
-        isRecording = false
-        self.owner = nil
-        sessionID = UUID()
+        release()
 
         audioCaptureHelper?.stopCapture()
         audioCaptureHelper = nil

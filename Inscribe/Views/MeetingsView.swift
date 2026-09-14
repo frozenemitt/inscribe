@@ -7,6 +7,7 @@ import AppKit
 /// Browse recorded meetings, read them by speaker, rename speakers, and export.
 struct MeetingsView: View {
     @Environment(MeetingRecorder.self) private var recorder
+    @Environment(TranscriptionEngine.self) private var engine
     @Environment(\.modelContext) private var modelContext
 
     @Query(sort: \Meeting.startedAt, order: .reverse) private var meetings: [Meeting]
@@ -96,6 +97,10 @@ struct MeetingsView: View {
             } label: {
                 Label("Start Meeting", systemImage: "record.circle")
             }
+            // A dictation holds the same microphone. Without this the button looked
+            // available, did nothing when clicked, and said nothing about why.
+            .disabled(engine.isBusy)
+            .help(engine.isBusy ? "Inscribe is dictating. Finish that first." : "")
 
         case .preparing:
             HStack(spacing: 6) {
