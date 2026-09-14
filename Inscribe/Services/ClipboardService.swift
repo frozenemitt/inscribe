@@ -22,27 +22,6 @@ enum ClipboardService {
         print("[ClipboardService] Copied \(text.count) characters to clipboard")
     }
 
-    /// Copy text and return success status
-    @discardableResult
-    static func copyWithResult(_ text: String) -> Bool {
-        guard !text.isEmpty else {
-            print("[ClipboardService] Failed to copy: text is empty")
-            return false
-        }
-
-        #if os(macOS)
-        let pasteboard = NSPasteboard.general
-        pasteboard.clearContents()
-        let success = pasteboard.setString(text, forType: .string)
-        print("[ClipboardService] Copy result: \(success)")
-        return success
-        #else
-        UIPasteboard.general.string = text
-        print("[ClipboardService] Copied \(text.count) characters to clipboard")
-        return true
-        #endif
-    }
-
     /// Read current clipboard contents (useful for testing)
     static func read() -> String? {
         #if os(macOS)

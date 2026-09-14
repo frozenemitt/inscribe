@@ -17,14 +17,18 @@ final class MeetingAudioStore {
     private static let log = Logger(subsystem: "com.inscribe.app", category: "MeetingAudio")
 
     /// Where recordings live, alongside the meeting database.
-    static var directory: URL {
+    ///
+    /// Resolved once. As a computed property this created the directory on every
+    /// lookup, and the transcript list looks it up once per utterance, four times a
+    /// second, for as long as a recording is playing.
+    static let directory: URL = {
         let base = FileManager.default
             .urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("Inscribe/MeetingAudio", isDirectory: true)
 
         try? FileManager.default.createDirectory(at: base, withIntermediateDirectories: true)
         return base
-    }
+    }()
 
     static func url(forFileNamed name: String) -> URL {
         directory.appendingPathComponent(name)

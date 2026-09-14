@@ -31,16 +31,11 @@ enum SpeakerAlignment {
         let ordered = transcript.sorted { $0.start < $1.start }
         guard !ordered.isEmpty else { return [] }
 
-        // No diarization: one unattributed block rather than nothing at all.
-        guard !turns.isEmpty else {
-            let text = ordered.map(\.text).joined()
-            return [AlignedUtterance(
-                speakerId: unknownSpeaker,
-                text: text.trimmingCharacters(in: .whitespacesAndNewlines),
-                start: ordered.first!.start,
-                end: ordered.last!.end
-            )]
-        }
+        // No diarization, no attribution. Returning one "unattributed" utterance made
+        // `hasSpeakerAttribution` true, which hid both the hint explaining that
+        // speaker separation was unavailable and the error saying why — leaving a
+        // Speakers list with a single nameless row and no way to find out.
+        guard !turns.isEmpty else { return [] }
 
         let sortedTurns = turns.sorted { $0.start < $1.start }
         var merged: [AlignedUtterance] = []

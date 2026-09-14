@@ -86,8 +86,14 @@ final class MeetingRecorder {
     private var diarizerFeedTask: Task<Void, Never>?
 
     /// Live text: everything kept so far, plus whatever this session has heard.
+    ///
+    /// Only this meeting's own session counts. Without the owner check, a dictation
+    /// taken during a pause appeared in the meeting window as though it were part of
+    /// the meeting, and then vanished on stop, because it was never saved into one.
     var liveTranscript: String {
-        let current = engine.currentTranscript + engine.volatileText
+        let current = engine.owner == .meeting
+            ? engine.currentTranscript + engine.volatileText
+            : ""
         guard !accumulatedTranscript.isEmpty else { return current }
         guard !current.isEmpty else { return accumulatedTranscript }
         return accumulatedTranscript + " " + current
@@ -451,25 +457,6 @@ final class MeetingRecorder {
             [MeetingRecorder] Saved "\(meeting.title)" — \
             \(meeting.utterances.count) utterances, \(meeting.speakers.count) speakers
             """)
-    }
-
-    /// Abandon the meeting without keeping it.
-    func cancel(in context: ModelContext) async {
-        guard state != .idle else { return }
-
-        engine.cancelRecording(owner: .meeting)
-        audioWriter.discard()
-        await teardown()
-
-        if let meeting = activeMeeting {
-            MeetingAudioStore.delete(fileNamed: meeting.audioFileName)
-            context.delete(meeting)
-            try? context.save()
-        }
-
-        activeMeeting = nil
-        state = .idle
-        AudioFeedbackService.shared.playIfEnabled(.recordingStopped, settings: settings)
     }
 
     // MARK: - Attribution

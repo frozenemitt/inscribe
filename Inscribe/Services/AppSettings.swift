@@ -356,60 +356,6 @@ final class AppSettings {
     }
 }
 
-// MARK: - Hotkey Parsing (macOS)
-
-#if os(macOS)
-import Carbon
-
-extension AppSettings {
-    /// Parse the hotkey string into modifier flags and key code
-    /// Returns nil if the hotkey string is invalid
-    func parseHotkey() -> (modifiers: UInt32, keyCode: UInt32)? {
-        // Default: Ctrl+Option+Command+C
-        // ⌃ = Control, ⌥ = Option, ⌘ = Command, ⇧ = Shift
-
-        var modifiers: UInt32 = 0
-        var keyChar: Character?
-
-        for char in hotkeyString {
-            switch char {
-            case "⌃":
-                modifiers |= UInt32(controlKey)
-            case "⌥":
-                modifiers |= UInt32(optionKey)
-            case "⌘":
-                modifiers |= UInt32(cmdKey)
-            case "⇧":
-                modifiers |= UInt32(shiftKey)
-            default:
-                keyChar = char
-            }
-        }
-
-        guard let key = keyChar else { return nil }
-
-        // Map common characters to key codes
-        let keyCode: UInt32
-        switch key.lowercased() {
-        case "c": keyCode = 8   // kVK_ANSI_C
-        case "v": keyCode = 9   // kVK_ANSI_V
-        case "x": keyCode = 7   // kVK_ANSI_X
-        case "z": keyCode = 6   // kVK_ANSI_Z
-        case "a": keyCode = 0   // kVK_ANSI_A
-        case "s": keyCode = 1   // kVK_ANSI_S
-        case "d": keyCode = 2   // kVK_ANSI_D
-        case "r": keyCode = 15  // kVK_ANSI_R
-        case "t": keyCode = 17  // kVK_ANSI_T
-        case "m": keyCode = 46  // kVK_ANSI_M
-        case " ": keyCode = 49  // kVK_Space
-        default: return nil
-        }
-
-        return (modifiers, keyCode)
-    }
-}
-#endif
-
 // MARK: - Output Mode
 
 /// Where finished text goes.

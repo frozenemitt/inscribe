@@ -252,8 +252,25 @@ final class RecordingCoordinator {
             #if os(macOS)
             overlay.hide()
             #endif
-            print("[RecordingCoordinator] Empty transcript, nothing to deliver")
             skipAIOnce = false
+
+            // A recognizer that failed and a room that was quiet used to look exactly
+            // the same from outside: both ended in silence with no text. Say which.
+            if let engineError = engine.error {
+                AudioFeedbackService.shared.playIfEnabled(.error, settings: settings)
+                NotificationService.shared.showErrorIfEnabled(
+                    engineError.localizedDescription,
+                    settings: settings
+                )
+                print("[RecordingCoordinator] Recognition failed: \(engineError)")
+            } else {
+                AudioFeedbackService.shared.playIfEnabled(.error, settings: settings)
+                NotificationService.shared.showErrorIfEnabled(
+                    "Nothing was heard. Check the input device in Settings.",
+                    settings: settings
+                )
+                print("[RecordingCoordinator] Empty transcript, nothing to deliver")
+            }
             return
         }
 

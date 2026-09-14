@@ -36,7 +36,12 @@ struct MeetingsView: View {
             }
         } detail: {
             if let meeting = selection ?? recorder.activeMeeting {
+                // A new view per meeting. Reused, it carried the previous meeting's
+                // summary state across: click Generate on one, click another, and the
+                // second one's button span and stayed disabled until the first
+                // finished — and showed the first one's failure under its heading.
                 MeetingDetailView(meeting: meeting)
+                    .id(meeting.persistentModelID)
             } else {
                 ContentUnavailableView(
                     "No Meeting Selected",
@@ -235,7 +240,11 @@ private struct MeetingDetailView: View {
             .frame(maxWidth: .infinity, alignment: .leading)
         }
         .onChange(of: meeting.persistentModelID) { _, _ in
+            // Reloaded, not just unloaded. `.onAppear` does not fire again when the
+            // subtree is structurally unchanged, so the bar sat at 0:00 with a dead
+            // scrubber until the user pressed Play.
             player.unload()
+            player.load(fileName: meeting.audioFileName)
         }
         .onDisappear { player.unload() }
         .sheet(item: $splitTarget) { utterance in
@@ -424,6 +433,8 @@ private struct MeetingDetailView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
 
+                let hasAudio = meeting.hasAudio
+
                 ForEach(meeting.orderedUtterances) { utterance in
                     VStack(alignment: .leading, spacing: 3) {
                         HStack(spacing: 6) {
@@ -431,7 +442,7 @@ private struct MeetingDetailView: View {
 
                             // Hearing the moment is the only way to know whether an
                             // attribution is right, so the timestamp plays it.
-                            if meeting.hasAudio {
+                            if hasAudio {
                                 Button {
                                     player.load(fileName: meeting.audioFileName)
                                     player.play(from: utterance)

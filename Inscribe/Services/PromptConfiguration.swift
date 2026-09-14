@@ -143,10 +143,11 @@ struct Prompt: Identifiable, Codable, Equatable, Hashable {
         case .topK(let k): .random(top: k)
         }
 
-        if let sampling {
-            return GenerationOptions(sampling: sampling, temperature: temperature)
-        }
-        return GenerationOptions(temperature: temperature)
+        return GenerationOptions(
+            sampling: sampling,
+            temperature: temperature,
+            maximumResponseTokens: maxResponseTokens
+        )
     }
 }
 
