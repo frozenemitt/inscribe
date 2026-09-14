@@ -1,4 +1,5 @@
 import AppIntents
+import SwiftData
 import Foundation
 
 #if os(iOS)
@@ -54,8 +55,13 @@ struct QuickTranscribeIntent: AppIntent {
             await LiveActivityManager.shared.startRecordingActivity()
             #endif
 
-            // Start recording
-            try await engine.startRecording()
+            // The same microphone, vocabulary and text rules the hotkey uses. A
+            // shortcut that transcribed differently from the menu bar was the same
+            // app answering the same question two ways.
+            try await engine.startRecording(
+                contextualStrings: settings.vocabularyHints,
+                inputDeviceUID: settings.inputDeviceUID
+            )
 
             // Record for specified duration
             try await Task.sleep(nanoseconds: UInt64(recordingDuration) * 1_000_000_000)
@@ -70,7 +76,11 @@ struct QuickTranscribeIntent: AppIntent {
             #endif
 
             // Stop and get transcription
-            let transcription = try await engine.stopRecording()
+            let transcription = TextProcessor.process(
+                try await engine.stopRecording(),
+                spokenPunctuation: settings.spokenPunctuationEnabled,
+                replacements: settings.wordReplacements
+            )
 
             guard !transcription.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
                 #if os(iOS)
@@ -112,6 +122,8 @@ struct QuickTranscribeIntent: AppIntent {
                 ClipboardService.copy(finalText)
             }
 
+            recordHistory(finalText, raw: transcription, promptName: promptName, settings: settings)
+
             // End Live Activity and show notification
             #if os(iOS)
             await LiveActivityManager.shared.endActivity()
@@ -149,6 +161,12 @@ struct QuickTranscribeIntent: AppIntent {
             )
 
         } catch {
+            // Shortcuts cancelling the run, or the system killing it for going past
+            // its time limit, throws out of the sleep above. Without this the
+            // microphone stays live with nothing watching it — no watchdog was armed,
+            // because the coordinator was never part of this.
+            engine.cancelRecording()
+
             #if os(iOS)
             await LiveActivityManager.shared.endActivity()
             AudioFeedbackService.shared.playErrorHaptic()
@@ -199,11 +217,19 @@ struct RecordTranscriptionIntent: AppIntent {
         // The app's engine, not a new one: a second engine records over whatever the
         // app is already doing, because the guard that refuses that is instance state.
         let engine = TranscriptionEngine.shared
+        let settings = AppSettings()
 
         do {
-            try await engine.startRecording()
+            try await engine.startRecording(
+                contextualStrings: settings.vocabularyHints,
+                inputDeviceUID: settings.inputDeviceUID
+            )
             try await Task.sleep(nanoseconds: UInt64(recordingDuration) * 1_000_000_000)
-            let transcription = try await engine.stopRecording()
+            let transcription = TextProcessor.process(
+                try await engine.stopRecording(),
+                spokenPunctuation: settings.spokenPunctuationEnabled,
+                replacements: settings.wordReplacements
+            )
 
             guard !transcription.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
                 return .result(value: "", dialog: "No speech detected.")
@@ -231,6 +257,13 @@ struct RecordTranscriptionIntent: AppIntent {
                 ClipboardService.copy(finalText)
             }
 
+            recordHistory(
+                finalText,
+                raw: transcription,
+                promptName: aiAction?.rawValue,
+                settings: settings
+            )
+
             let dialog = if aiProcessingFailed {
                 copyToClipboard
                     ? "AI processing failed. Raw transcription copied to clipboard."
@@ -244,6 +277,9 @@ struct RecordTranscriptionIntent: AppIntent {
             return .result(value: finalText, dialog: IntentDialog(stringLiteral: dialog))
 
         } catch {
+            // Same reason as the other intent: a cancelled run must not leave the
+            // microphone recording.
+            engine.cancelRecording()
             throw error
         }
     }
@@ -312,4 +348,29 @@ struct PromptQuery: EntityQuery {
         let config = PromptConfiguration()
         return config.prompts.map { PromptEntity(id: $0.id, name: $0.name) }
     }
+}
+
+// MARK: - History
+
+/// Keep what a shortcut dictated, the same as the hotkey does.
+///
+/// A transcript that exists only in a Shortcuts result is gone the moment the user
+/// dismisses it, which is exactly the case history exists for.
+@MainActor
+private func recordHistory(
+    _ text: String,
+    raw: String,
+    promptName: String?,
+    settings: AppSettings
+) {
+    #if os(macOS)
+    DictationHistory.record(
+        text: text,
+        rawText: raw == text ? nil : raw,
+        destination: "Shortcuts",
+        promptName: promptName,
+        settings: settings,
+        in: ScribeApp.modelContainer.mainContext
+    )
+    #endif
 }

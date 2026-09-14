@@ -54,11 +54,13 @@ struct ScribeApp: App {
     @State private var coordinator: RecordingCoordinator
     @State private var meetingRecorder: MeetingRecorder
 
-    /// One store for meetings, shared by every scene.
+    /// One store for meetings and dictation history, shared by every scene.
     ///
     /// Built once here rather than by `.modelContainer(for:)` per scene, so the menu
-    /// bar and the meetings window write to the same file rather than two.
-    private let modelContainer: ModelContainer = {
+    /// bar and the meetings window write to the same file rather than two. Static
+    /// because App Intents are built by the system and cannot be handed the app's
+    /// dependencies — without this a shortcut could not write to history at all.
+    static let modelContainer: ModelContainer = {
         let log = Logger(subsystem: "com.inscribe.app", category: "Store")
         let schema = Schema(versionedSchema: MeetingSchemaV1.self)
         do {
@@ -127,7 +129,7 @@ struct ScribeApp: App {
 
             print("[ScribeApp] Quitting with a meeting open — saving it first")
             Task { @MainActor in
-                await meetingRecorder.stop(in: modelContainer.mainContext)
+                await meetingRecorder.stop(in: Self.modelContainer.mainContext)
                 done()
             }
             return true
@@ -160,7 +162,7 @@ struct ScribeApp: App {
                 .environment(coordinator)
                 .environment(hotkeyMonitor)
                 .environment(meetingRecorder)
-                .modelContainer(modelContainer)
+                .modelContainer(Self.modelContainer)
         } label: {
             MenuBarIcon(
                 isRecording: transcriptionEngine.isRecording,
@@ -187,21 +189,21 @@ struct ScribeApp: App {
                 .environment(settings)
                 .environment(meetingRecorder)
                 .environment(transcriptionEngine)
-                .modelContainer(modelContainer)
+                .modelContainer(Self.modelContainer)
         }
         .defaultSize(width: 900, height: 600)
 
         Window("Import Recording", id: Self.importWindowID) {
             ImportRecordingView()
                 .environment(settings)
-                .modelContainer(modelContainer)
+                .modelContainer(Self.modelContainer)
         }
         .defaultSize(width: 560, height: 520)
 
         Window("Dictation History", id: Self.historyWindowID) {
             DictationHistoryView()
                 .environment(settings)
-                .modelContainer(modelContainer)
+                .modelContainer(Self.modelContainer)
         }
         .defaultSize(width: 620, height: 520)
     }
@@ -223,7 +225,7 @@ struct ScribeApp: App {
         }
 
         // The coordinator keeps finished dictations, which needs the open store.
-        coordinator.modelContext = modelContainer.mainContext
+        coordinator.modelContext = Self.modelContainer.mainContext
 
         wireHotkeyCallbacks()
         armHotkey()

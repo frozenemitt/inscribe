@@ -102,6 +102,8 @@ struct GeneralSettingsView: View {
     @Environment(GlobalHotkeyMonitor.self) private var hotkeyMonitor
     #endif
 
+    @State private var isConfirmingReset = false
+
     var body: some View {
         @Bindable var settings = settings
 
@@ -159,15 +161,17 @@ struct GeneralSettingsView: View {
 
             Section {
                 Button("Reset to Defaults") {
-                    settings.resetToDefaults()
-                    #if os(macOS)
-                    // The Hotkey tab re-arms on its own changes, but it is not on
-                    // screen here — without this the old combination keeps firing and
-                    // the restored one does nothing until the app is relaunched.
-                    hotkeyMonitor.trigger = settings.hotkeyTrigger
-                    hotkeyMonitor.activationMode = settings.hotkeyActivationMode
-                    hotkeyMonitor.undoTrigger = settings.undoHotkeyTrigger
-                    #endif
+                    isConfirmingReset = true
+                }
+                .confirmationDialog(
+                    "Reset every setting to its default?",
+                    isPresented: $isConfirmingReset,
+                    titleVisibility: .visible
+                ) {
+                    Button("Reset Everything", role: .destructive) { resetToDefaults() }
+                    Button("Cancel", role: .cancel) { }
+                } message: {
+                    Text("This also clears your word replacements, vocabulary hints, per-app settings and recorded hotkey. It cannot be undone.")
                 }
             }
         }
@@ -175,6 +179,18 @@ struct GeneralSettingsView: View {
         #if os(iOS)
         .navigationTitle("General")
         .navigationBarTitleDisplayMode(.inline)
+        #endif
+    }
+
+    private func resetToDefaults() {
+        settings.resetToDefaults()
+        #if os(macOS)
+        // The Hotkey tab re-arms on its own changes, but it is not on screen here —
+        // without this the old combination keeps firing and the restored one does
+        // nothing until the app is relaunched.
+        hotkeyMonitor.trigger = settings.hotkeyTrigger
+        hotkeyMonitor.activationMode = settings.hotkeyActivationMode
+        hotkeyMonitor.undoTrigger = settings.undoHotkeyTrigger
         #endif
     }
 }
@@ -663,7 +679,11 @@ struct PromptDetailView: View {
         .navigationTitle(prompt.name)
         .navigationBarTitleDisplayMode(.inline)
         #endif
-        .onChange(of: prompt) { _, newPrompt in
+        // Keyed on the prompt's identity, not its value. Keyed on the value, any edit
+        // to the stored prompt — toggling its visibility from its own row, say —
+        // reloaded the editor and threw away whatever the user had typed but not saved.
+        .onChange(of: prompt.id) { _, _ in
+            let newPrompt = prompt
             name = newPrompt.name
             systemPrompt = newPrompt.systemPrompt
             userTemplate = newPrompt.userTemplate
