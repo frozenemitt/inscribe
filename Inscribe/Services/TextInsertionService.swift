@@ -266,7 +266,11 @@ enum TextInsertionService {
     /// costs one clipboard left unrestored; being wrong the other way costs the user
     /// their dictation.
     private static func pasteLanded(in field: AXUIElement, changedFrom before: FieldState) async -> Bool {
-        for _ in 0..<12 {
+        // Generous, because waiting costs nothing here: the transcript is on the
+        // clipboard for the whole of it, and the loop returns the instant the field
+        // moves. A busy Electron field can take most of a second, and calling that a
+        // failure loses the user their clipboard and their undo.
+        for _ in 0..<40 {
             try? await Task.sleep(for: .milliseconds(30))
             if state(of: field) != before { return true }
         }

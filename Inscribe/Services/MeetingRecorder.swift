@@ -168,7 +168,8 @@ final class MeetingRecorder {
 
         // Keep the audio, if the user wants it kept. Started before capture so the
         // first buffer is not lost while the file is being opened.
-        if settings.keepMeetingAudio {
+        keepingAudio = settings.keepMeetingAudio
+        if keepingAudio {
             meeting.audioFileName = audioWriter.begin()
         }
 
@@ -193,6 +194,7 @@ final class MeetingRecorder {
             return
         }
 
+        sessionStartedAt = Date()
         activeMeeting = meeting
         state = .recording
         AudioFeedbackService.shared.playIfEnabled(.recordingStarted, settings: settings)
@@ -230,6 +232,20 @@ final class MeetingRecorder {
         }
     }
 
+    /// When the session currently capturing began.
+    ///
+    /// The recorded length is the sum of these stretches. Measured from the last
+    /// transcribed run instead, a meeting that ended in a minute of silence reported
+    /// five seconds recorded and called itself paused.
+    private var sessionStartedAt: Date?
+
+    /// Whether this meeting is keeping its audio, decided when it started.
+    ///
+    /// Read once rather than per session: changed during a pause, the setting used to
+    /// leave a five minute recording under a ten minute transcript, or switch on a
+    /// writer that had never opened a file and record nothing at all.
+    private var keepingAudio = false
+
     /// Route captured audio to the recording file and the diarizer.
     ///
     /// One tap, two consumers: diarization needs 16 kHz mono floats, the recording
@@ -239,7 +255,7 @@ final class MeetingRecorder {
         let diarizer = self.diarizer
         let writer = audioWriter
         let wantsDiarization = diarizationActive
-        let wantsAudio = settings.keepMeetingAudio
+        let wantsAudio = keepingAudio
         let audioConverter = converter
 
         let (feed, continuation) = AsyncStream<[Float]>.makeStream()
@@ -331,6 +347,7 @@ final class MeetingRecorder {
             return
         }
 
+        sessionStartedAt = Date()
         state = .recording
         AudioFeedbackService.shared.playIfEnabled(.recordingStarted, settings: settings)
         print("[MeetingRecorder] Resumed at offset \(Int(sessionOffset))s")
@@ -353,9 +370,13 @@ final class MeetingRecorder {
             accumulatedTranscript += accumulatedTranscript.isEmpty ? trimmed : " " + trimmed
         }
 
-        // The last run's end is the best available measure of this session's audio,
-        // and it is the same clock the offsets use.
-        completedAudioSeconds = max(completedAudioSeconds, collectedSegments.last?.end ?? offset)
+        // Wall clock across the stretch that was actually capturing. Nothing is
+        // recorded while paused, so this is both the length of the audio file and the
+        // clock the segment offsets are placed on.
+        if let sessionStartedAt {
+            completedAudioSeconds += Date().timeIntervalSince(sessionStartedAt)
+        }
+        sessionStartedAt = nil
 
         // Written through on every harvest, not only at stop(). A crash or a kill that
         // never reaches stop() then costs the current session rather than the meeting.

@@ -13,6 +13,10 @@ struct DictationHistoryView: View {
     @State private var searchText = ""
     @State private var justCopied: PersistentIdentifier?
 
+    /// What the last Insert did. The button used to throw its answer away, which left
+    /// the user with no way to tell a successful paste from a silent miss.
+    @State private var insertResult: String?
+
     private var filtered: [Dictation] {
         let query = searchText.trimmingCharacters(in: .whitespaces)
         guard !query.isEmpty else { return dictations }
@@ -40,7 +44,22 @@ struct DictationHistoryView: View {
             } else {
                 list
             }
+
+            if let insertResult {
+                Text(insertResult)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .padding(8)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(.quaternary)
+                    .transition(.opacity)
+                    .task(id: insertResult) {
+                        try? await Task.sleep(for: .seconds(4))
+                        self.insertResult = nil
+                    }
+            }
         }
+        .animation(.default, value: insertResult)
         .navigationTitle("Dictation History")
         .searchable(text: $searchText, placement: .toolbar, prompt: "Search dictations")
         .toolbar {
@@ -156,12 +175,23 @@ struct DictationHistoryView: View {
     /// first destination was wrong.
     private func insert(_ dictation: Dictation) {
         Task {
-            await TextInsertionService.deliver(
+            // Step out of the way first. While this window is frontmost the focused
+            // text field is Inscribe's own search box, which is where the text used
+            // to land.
+            NSApp.hide(nil)
+            try? await Task.sleep(for: .milliseconds(250))
+
+            let outcome = await TextInsertionService.deliver(
                 dictation.text,
-                targetApp: nil,
+                targetApp: NSWorkspace.shared.frontmostApplication,
                 restoreClipboard: settings.restoreClipboardAfterPaste,
                 autoSubmit: false
             )
+
+            insertResult = switch outcome {
+            case .inserted(let appName): "Sent to \(appName)."
+            case .copiedToClipboard: "No text field was focused, so it is on your clipboard."
+            }
         }
     }
 }

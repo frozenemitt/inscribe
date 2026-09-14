@@ -515,7 +515,12 @@ extension AppSettings {
         let control = modifiers.contains(.maskControl)
         let option = modifiers.contains(.maskAlternate)
         let command = modifiers.contains(.maskCommand)
-        guard control || option || command else { return nil }
+
+        // Two of them, not one. The tap swallows the trigger in every app on the
+        // machine, so a single-modifier binding takes that keystroke away everywhere:
+        // record ⌘W to dismiss the settings window and ⌘W stops closing windows.
+        let count = [control, option, command].filter { $0 }.count
+        guard count >= 2 else { return nil }
 
         guard let character = keyCodes.first(where: { $0.value == keyCode })?.key else { return nil }
 

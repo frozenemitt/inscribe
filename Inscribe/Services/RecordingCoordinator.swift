@@ -70,6 +70,14 @@ final class RecordingCoordinator {
     /// for a model to answer.
     private var stopTask: Task<String, any Error>?
 
+    /// True from the moment the engine lets go until the text has landed.
+    ///
+    /// The AI pass can take seconds, and the text belongs to the app that was
+    /// frontmost when it was spoken. A second dictation started in the meantime would
+    /// have the first one's words activated into the first one's app, pulling focus
+    /// away from the sentence being spoken right now.
+    private var isDelivering = false
+
     /// True only while *this* coordinator's dictation is running.
     ///
     /// Not `engine.isRecording`: the engine is shared with meeting mode, and a meeting
@@ -130,6 +138,12 @@ final class RecordingCoordinator {
         // this the new session cleared the old one's transcript out from under it and
         // both sets of words were lost.
         if let stopTask { _ = try? await stopTask.value }
+
+        guard !isDelivering else {
+            print("[RecordingCoordinator] Still delivering the last dictation")
+            AudioFeedbackService.shared.playIfEnabled(.error, settings: settings)
+            return
+        }
 
         // Refuse to start over anyone's session, including a meeting's, and including
         // one that is still coming up.
@@ -204,6 +218,9 @@ final class RecordingCoordinator {
             overlay.hide()
         }
         #endif
+
+        isDelivering = true
+        defer { isDelivering = false }
 
         let rawTranscript: String
         let stop = Task { try await engine.stopRecording(owner: .dictation) }

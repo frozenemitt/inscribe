@@ -207,13 +207,17 @@ struct ImportRecordingView: View {
         let meeting = Meeting(title: url.deletingPathExtension().lastPathComponent)
         modelContext.insert(meeting)
 
+        // Dated backwards from now by the length of the recording. Left at now, the
+        // meeting spanned no time at all and every list and export read 0:00.
+        let length = transcriber.timedSegments.last?.end ?? 0
+        meeting.startedAt = Date().addingTimeInterval(-length)
         meeting.endedAt = Date()
         meeting.rawTranscript = TextProcessor.process(
             transcript,
             spokenPunctuation: settings.spokenPunctuationEnabled,
             replacements: settings.wordReplacements
         )
-        meeting.recordedDuration = transcriber.timedSegments.last?.end ?? 0
+        meeting.recordedDuration = length
 
         let aligned = SpeakerAlignment.align(
             transcript: transcriber.timedSegments,

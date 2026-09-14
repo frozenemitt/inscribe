@@ -1208,7 +1208,7 @@ struct HotkeySettingsView: View {
                     .font(.caption)
                     .foregroundStyle(.orange)
             } else {
-                Text("Use at least one modifier (⌃, ⌥, or ⌘). Escape cancels.")
+                Text("Use at least two of ⌃, ⌥ and ⌘, so the shortcut cannot swallow an everyday one like ⌘W. Escape cancels.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -1242,7 +1242,7 @@ struct HotkeySettingsView: View {
             ) else {
                 // Stay armed and say why, rather than swallowing the keystroke and
                 // leaving the user pressing keys at a screen that never answers.
-                captureError = "That one cannot be a hotkey. Use a letter, number or punctuation key with ⌃, ⌥ or ⌘."
+                captureError = "That one cannot be a hotkey. Use a letter, number or punctuation key with at least two of ⌃, ⌥ and ⌘."
                 return
             }
 

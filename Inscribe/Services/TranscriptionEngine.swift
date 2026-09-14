@@ -270,12 +270,15 @@ final class TranscriptionEngine {
         // finished handing back its words.
         phase = .stopping
 
-        // Stop audio capture helper
+        // Stop audio capture helper. This finishes the audio stream, so the task
+        // below runs out of buffers on its own.
         audioCaptureHelper?.stopCapture()
         audioCaptureHelper = nil
 
-        // Cancel audio processing task
-        audioProcessingTask?.cancel()
+        // Awaited rather than cancelled. An AsyncStream iterator throws away whatever
+        // is still buffered when it is cancelled, and what is still buffered is
+        // always the end of the sentence the user just spoke.
+        await audioProcessingTask?.value
         audioProcessingTask = nil
 
         // Finalize transcription
