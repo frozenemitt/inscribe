@@ -6,6 +6,7 @@ import AppKit
 import Carbon.HIToolbox
 import ApplicationServices
 import os
+import OSLog
 
 /// How a hotkey starts and stops a recording.
 enum HotkeyActivationMode: String, CaseIterable, Identifiable, Sendable {
@@ -68,6 +69,11 @@ private struct TapState: Sendable {
 @MainActor
 @Observable
 final class GlobalHotkeyMonitor {
+
+    /// Says out loud whether the tap exists, whether macOS switched it off, and what
+    /// the trigger key did. Only the trigger key is ever written: no other keystroke
+    /// reaches this log.
+    nonisolated static let log = Logger(subsystem: "com.inscribe.app", category: "Hotkey")
 
     // MARK: - Observable State
 
@@ -180,6 +186,7 @@ final class GlobalHotkeyMonitor {
         guard AccessibilityPermission.isTrusted else {
             lastError = "Accessibility access is required to detect the hotkey."
             isRunning = false
+            Self.log.error("not trusted, no tap")
             return false
         }
 
@@ -209,13 +216,14 @@ final class GlobalHotkeyMonitor {
         ) else {
             lastError = "Could not create the event tap. Grant Accessibility access and try again."
             isRunning = false
+            Self.log.error("tapCreate returned nil")
             return false
         }
 
         host = TapHost(tap: tap)
         isRunning = true
         lastError = nil
-        print("[GlobalHotkeyMonitor] Event tap installed on its own thread, trigger=\(trigger), mode=\(activationMode.rawValue)")
+        Self.log.notice("tap installed, trigger=\(String(describing: self.trigger), privacy: .public), mode=\(self.activationMode.rawValue, privacy: .public), suppress=\(self.suppressTriggerKey, privacy: .public)")
         return true
     }
 
@@ -320,6 +328,13 @@ final class GlobalHotkeyMonitor {
             }
         }
 
+        // Only the trigger key is reported, as a press or a release. Nothing about any
+        // other keystroke is written here.
+        if type == .flagsChanged, keyCode == fnKeyCode {
+            let edge = flags.contains(.maskSecondaryFn) ? "down" : "up"
+            Self.log.notice("globe \(edge, privacy: .public) action=\(String(describing: action), privacy: .public) swallow=\(swallow, privacy: .public)")
+        }
+
         if let action { emit.yield(action) }
         return swallow
     }
@@ -330,13 +345,14 @@ final class GlobalHotkeyMonitor {
     /// missed its deadline, and every keystroke queued behind it was dropped — so it
     /// gets said out loud rather than quietly patched over.
     fileprivate nonisolated func tapWasDisabled(byTimeout: Bool) {
-        print("[GlobalHotkeyMonitor] Tap disabled by \(byTimeout ? "TIMEOUT" : "user input"), re-enabling")
+        Self.log.error("tap disabled by \(byTimeout ? "TIMEOUT" : "user input", privacy: .public), re-enabling")
         host?.reenable()
     }
 
     // MARK: - Main Actor
 
     private func perform(_ action: HotkeyAction) {
+        Self.log.notice("performing \(String(describing: action), privacy: .public)")
         switch action {
         case .activate: onActivate?()
         case .deactivate: onDeactivate?()
