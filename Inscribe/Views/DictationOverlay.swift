@@ -16,12 +16,20 @@ final class DictationOverlayController {
 
     // MARK: - Presentation
 
+    static let minimumHeight: CGFloat = 92
+
     func show() {
         model.text = ""
         model.isProcessing = false
 
         if panel == nil {
             panel = makePanel()
+        }
+
+        if let panel, panel.frame.height != Self.minimumHeight {
+            var frame = panel.frame
+            frame.size.height = Self.minimumHeight
+            panel.setFrame(frame, display: false)
         }
 
         position(panel)
@@ -32,6 +40,25 @@ final class DictationOverlayController {
 
     func update(text: String) {
         model.text = text
+        growToFit()
+    }
+
+    /// Match the panel's height to the text, growing upward from a fixed bottom edge.
+    ///
+    /// The panel used to be 92 points tall whatever it held, so a dictation past a
+    /// line and a half showed its last two lines and hid everything before them.
+    private func growToFit() {
+        guard let panel, let content = panel.contentView else { return }
+
+        content.layoutSubtreeIfNeeded()
+        let height = max(content.fittingSize.height, Self.minimumHeight)
+        guard abs(panel.frame.height - height) > 0.5 else { return }
+
+        // An NSWindow's origin is its bottom-left corner, so keeping it fixed while
+        // the height grows opens the panel upward, away from the Dock.
+        var frame = panel.frame
+        frame.size.height = height
+        panel.setFrame(frame, display: true)
     }
 
     func showProcessing() {
@@ -98,7 +125,7 @@ private struct DictationOverlayView: View {
     @Bindable var model: OverlayModel
 
     var body: some View {
-        HStack(spacing: 12) {
+        HStack(alignment: .top, spacing: 12) {
             Image(systemName: model.isProcessing ? "brain" : "waveform")
                 .font(.title2)
                 .foregroundStyle(model.isProcessing ? .orange : .red)
@@ -107,13 +134,17 @@ private struct DictationOverlayView: View {
             Text(displayText)
                 .font(.title3)
                 .foregroundStyle(model.text.isEmpty ? .secondary : .primary)
-                .lineLimit(2)
+                // Up to five lines, and the oldest words are the ones dropped: what
+                // you just said is what you want to check.
+                .lineLimit(5)
                 .truncationMode(.head)
+                .fixedSize(horizontal: false, vertical: true)
                 .frame(maxWidth: .infinity, alignment: .leading)
         }
         .padding(.horizontal, 18)
         .padding(.vertical, 14)
-        .frame(width: 460, height: 92)
+        .frame(width: 460)
+        .frame(minHeight: DictationOverlayController.minimumHeight)
         .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16))
         .overlay(
             RoundedRectangle(cornerRadius: 16)
