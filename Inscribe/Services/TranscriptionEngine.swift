@@ -219,7 +219,7 @@ final class TranscriptionEngine {
 
         let tap = audioTap
 
-        audioProcessingTask = Task.detached {
+        audioProcessingTask = Task.detached(priority: .userInitiated) {
             let converter = BufferConverter()
             var bufferCount = 0
 
@@ -439,7 +439,15 @@ final class TranscriptionEngine {
         }
 
         // Create analyzer with transcriber
-        speechAnalyzer = SpeechAnalyzer(modules: [transcriber])
+        //
+        // Run at the priority of something the user is waiting on, because they are:
+        // the words appear on the overlay as fast as this work is scheduled. Keeping
+        // the model for the life of the process spares every dictation after the first
+        // the cost of loading it again.
+        speechAnalyzer = SpeechAnalyzer(
+            modules: [transcriber],
+            options: .init(priority: .userInitiated, modelRetention: .processLifetime)
+        )
 
         // Bias the recognizer toward the user's own vocabulary. Unlike a post-hoc
         // replacement this changes what the model is listening for, which is what
