@@ -63,11 +63,6 @@ final class AppSettings {
 
     // MARK: - Transcript Processing
 
-    /// Turn spoken punctuation words into marks: say "period", get ".".
-    var spokenPunctuationEnabled: Bool {
-        didSet { save("spokenPunctuationEnabled", spokenPunctuationEnabled) }
-    }
-
     /// Case-insensitive whole-word substitutions applied to every transcript,
     /// for names and jargon the transcriber reliably mishears.
     var wordReplacements: [String: String] {
@@ -237,7 +232,6 @@ final class AppSettings {
         self.showDictationOverlay = UserDefaults.standard.object(forKey: "showDictationOverlay") as? Bool ?? true
         self.useShiftReturnAfterInsert = UserDefaults.standard.object(forKey: "useShiftReturnAfterInsert") as? Bool ?? false
         self.maxRecordingSeconds = UserDefaults.standard.object(forKey: "maxRecordingSeconds") as? Int ?? 600
-        self.spokenPunctuationEnabled = UserDefaults.standard.object(forKey: "spokenPunctuationEnabled") as? Bool ?? false
         self.wordReplacements = UserDefaults.standard.dictionary(forKey: "wordReplacements") as? [String: String] ?? [:]
         self.vocabularyHints = UserDefaults.standard.stringArray(forKey: "vocabularyHints") ?? []
         self.inputDeviceUID = UserDefaults.standard.string(forKey: "inputDeviceUID") ?? "default"
@@ -326,7 +320,6 @@ final class AppSettings {
         showDictationOverlay = true
         useShiftReturnAfterInsert = false
         maxRecordingSeconds = 600
-        spokenPunctuationEnabled = false
         wordReplacements = [:]
         vocabularyHints = []
         inputDeviceUID = "default"

@@ -1456,16 +1456,6 @@ struct DictationSettingsView: View {
                 MeetingAudioSection()
             }
 
-            Section("Spoken Punctuation") {
-                Toggle("Say the punctuation you want", isOn: $settings.spokenPunctuationEnabled)
-
-                if settings.spokenPunctuationEnabled {
-                    Text("\"hello there period new line thanks\" becomes \"hello there.\\nthanks\". Also: comma, colon, semicolon, question mark, exclamation point, new paragraph, open and close quote, parenthesis, hyphen, ellipsis.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-            }
-
             Section("Vocabulary") {
                 Text("Names and jargon the recognizer should expect, one per line. This steers what it listens for, so it beats correcting the same word every time.")
                     .font(.caption)

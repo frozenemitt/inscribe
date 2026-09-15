@@ -6,73 +6,10 @@ import Foundation
 /// way you want it rather than being "fixed" back to whatever the transcriber heard.
 enum TextProcessor {
 
-    /// Apply spoken punctuation and the user's replacement list, in that order.
-    static func process(
-        _ text: String,
-        spokenPunctuation: Bool,
-        replacements: [String: String]
-    ) -> String {
-        var result = text
-
-        // Punctuation first: a replacement whose target contains a comma or period
-        // should survive, not get eaten by the punctuation pass.
-        if spokenPunctuation {
-            result = applySpokenPunctuation(to: result)
-        }
-
-        if !replacements.isEmpty {
-            result = applyReplacements(replacements, to: result)
-        }
-
-        return result
-    }
-
-    // MARK: - Spoken Punctuation
-
-    /// Phrases that become punctuation when spoken.
-    ///
-    /// Ordered longest-first: "question mark" has to win before "mark" or the bare
-    /// word would strand a stray "question".
-    private static let punctuation: [(phrase: String, mark: String, eatsFollowingSpace: Bool)] = [
-        ("new paragraph", "\n\n", true),
-        ("new line", "\n", true),
-        ("exclamation point", "!", false),
-        ("exclamation mark", "!", false),
-        ("question mark", "?", false),
-        ("open parenthesis", "(", true),
-        ("close parenthesis", ")", false),
-        ("open quote", "\u{201C}", true),
-        ("close quote", "\u{201D}", false),
-        ("semicolon", ";", false),
-        ("ellipsis", "\u{2026}", false),
-        ("full stop", ".", false),
-        ("colon", ":", false),
-        ("comma", ",", false),
-        ("period", ".", false),
-        ("hyphen", "-", true)
-    ]
-
-    private static func applySpokenPunctuation(to text: String) -> String {
-        var result = text
-
-        for entry in punctuation {
-            // Swallow the space before the mark, so "hello period" reads "hello."
-            // rather than "hello ." Line breaks swallow the trailing space too.
-            let trailing = entry.eatsFollowingSpace ? "\\s*" : ""
-            let pattern = "\\s*\\b\(NSRegularExpression.escapedPattern(for: entry.phrase))\\b\(trailing)"
-
-            guard let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]) else {
-                continue
-            }
-
-            result = regex.stringByReplacingMatches(
-                in: result,
-                range: NSRange(result.startIndex..., in: result),
-                withTemplate: NSRegularExpression.escapedTemplate(for: entry.mark)
-            )
-        }
-
-        return result
+    /// Apply the user's replacement list.
+    static func process(_ text: String, replacements: [String: String]) -> String {
+        guard !replacements.isEmpty else { return text }
+        return applyReplacements(replacements, to: text)
     }
 
     // MARK: - Word Replacements

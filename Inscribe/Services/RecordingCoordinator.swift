@@ -244,7 +244,6 @@ final class RecordingCoordinator {
         // rather than being "corrected" back.
         let transcript = TextProcessor.process(
             rawTranscript,
-            spokenPunctuation: settings.spokenPunctuationEnabled,
             replacements: settings.wordReplacements
         )
 

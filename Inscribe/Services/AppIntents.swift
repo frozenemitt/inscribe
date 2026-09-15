@@ -78,7 +78,6 @@ struct QuickTranscribeIntent: AppIntent {
             // Stop and get transcription
             let transcription = TextProcessor.process(
                 try await engine.stopRecording(),
-                spokenPunctuation: settings.spokenPunctuationEnabled,
                 replacements: settings.wordReplacements
             )
 
@@ -227,7 +226,6 @@ struct RecordTranscriptionIntent: AppIntent {
             try await Task.sleep(nanoseconds: UInt64(recordingDuration) * 1_000_000_000)
             let transcription = TextProcessor.process(
                 try await engine.stopRecording(),
-                spokenPunctuation: settings.spokenPunctuationEnabled,
                 replacements: settings.wordReplacements
             )
 

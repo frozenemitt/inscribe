@@ -440,7 +440,6 @@ final class MeetingRecorder {
         meeting.audioFileName = audioWriter.finish()
         meeting.rawTranscript = TextProcessor.process(
             accumulatedTranscript,
-            spokenPunctuation: settings.spokenPunctuationEnabled,
             replacements: settings.wordReplacements
         )
 
@@ -492,7 +491,6 @@ final class MeetingRecorder {
                 speakerId: item.speakerId,
                 text: TextProcessor.process(
                     item.text,
-                    spokenPunctuation: settings.spokenPunctuationEnabled,
                     replacements: settings.wordReplacements
                 ),
                 start: item.start,

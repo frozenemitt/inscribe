@@ -214,7 +214,6 @@ struct ImportRecordingView: View {
         meeting.endedAt = Date()
         meeting.rawTranscript = TextProcessor.process(
             transcript,
-            spokenPunctuation: settings.spokenPunctuationEnabled,
             replacements: settings.wordReplacements
         )
         meeting.recordedDuration = length
@@ -239,7 +238,6 @@ struct ImportRecordingView: View {
                 speakerId: item.speakerId,
                 text: TextProcessor.process(
                     item.text,
-                    spokenPunctuation: settings.spokenPunctuationEnabled,
                     replacements: settings.wordReplacements
                 ),
                 start: item.start,
