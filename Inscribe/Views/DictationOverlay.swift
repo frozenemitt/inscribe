@@ -124,6 +124,13 @@ final class OverlayModel {
 private struct DictationOverlayView: View {
     @Bindable var model: OverlayModel
 
+    /// Five lines of the text style actually in use, so it follows the system font
+    /// size rather than a number that happens to look right today.
+    static let visibleTextHeight: CGFloat = {
+        let font = NSFont.preferredFont(forTextStyle: .title3)
+        return ceil(font.ascender - font.descender + font.leading) * 5
+    }()
+
     var body: some View {
         HStack(alignment: .top, spacing: 12) {
             Image(systemName: model.isProcessing ? "brain" : "waveform")
@@ -131,15 +138,20 @@ private struct DictationOverlayView: View {
                 .foregroundStyle(model.isProcessing ? .orange : .red)
                 .symbolEffect(.variableColor.iterative, options: .repeating)
 
+            // Clipped to the last five lines rather than truncated to five.
+            //
+            // `lineLimit(5)` with head truncation keeps the first four lines and puts
+            // the ellipsis inside the fifth, so a long dictation showed its opening
+            // and hid the words being spoken. Letting the text take its full height
+            // inside a bottom-aligned frame pushes the old lines off the top instead,
+            // which is the way round you need while you are still talking.
             Text(displayText)
                 .font(.title3)
                 .foregroundStyle(model.text.isEmpty ? .secondary : .primary)
-                // Up to five lines, and the oldest words are the ones dropped: what
-                // you just said is what you want to check.
-                .lineLimit(5)
-                .truncationMode(.head)
                 .fixedSize(horizontal: false, vertical: true)
                 .frame(maxWidth: .infinity, alignment: .leading)
+                .frame(maxHeight: Self.visibleTextHeight, alignment: .bottom)
+                .clipped()
         }
         .padding(.horizontal, 18)
         .padding(.vertical, 14)
