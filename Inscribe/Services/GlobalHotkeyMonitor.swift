@@ -46,18 +46,6 @@ private enum HotkeyAction: Sendable {
     case activate, deactivate, toggle, cancel, undo
     /// The settings screen is waiting for a new binding, and this was the keystroke.
     case capture(keyCode: CGKeyCode, modifiers: CGEventFlags)
-
-    /// Safe to log: names the case without the key it carries.
-    var name: String {
-        switch self {
-        case .activate: "activate"
-        case .deactivate: "deactivate"
-        case .toggle: "toggle"
-        case .cancel: "cancel"
-        case .undo: "undo"
-        case .capture: "capture"
-        }
-    }
 }
 
 /// Everything the tap callback reads, kept where the tap's own thread can reach it.
@@ -82,9 +70,8 @@ private struct TapState: Sendable {
 @Observable
 final class GlobalHotkeyMonitor {
 
-    /// Says out loud whether the tap exists, whether macOS switched it off, and what
-    /// the trigger key did. Only the trigger key is ever written: no other keystroke
-    /// reaches this log.
+    /// Says whether the tap exists, whether it is enabled, and whether macOS switched
+    /// it off. No keystroke is ever written here.
     nonisolated static let log = Logger(subsystem: "com.inscribe.app", category: "Hotkey")
 
     // MARK: - Observable State
@@ -364,19 +351,6 @@ final class GlobalHotkeyMonitor {
             }
         }
 
-        // Modifier events carry no typed characters, so the key code is safe to name
-        // here; it is the only way to see what the Globe key actually arrives as.
-        if type == .flagsChanged {
-            Self.log.notice("flagsChanged keyCode=\(keyCode, privacy: .public) fnBit=\(flags.contains(.maskSecondaryFn), privacy: .public) isFnKeyCode=\(keyCode == fnKeyCode, privacy: .public)")
-        }
-
-        // Only the trigger key is reported, as a press or a release. Nothing about any
-        // other keystroke is written here.
-        if type == .flagsChanged, keyCode == fnKeyCode {
-            let edge = flags.contains(.maskSecondaryFn) ? "down" : "up"
-            Self.log.notice("globe \(edge, privacy: .public) action=\(action?.name ?? "none", privacy: .public) swallow=\(swallow, privacy: .public)")
-        }
-
         if let action { emit.yield(action) }
         return swallow
     }
@@ -398,9 +372,6 @@ final class GlobalHotkeyMonitor {
     // MARK: - Main Actor
 
     private func perform(_ action: HotkeyAction) {
-        // The case name only. `.capture` carries the key the user just pressed while
-        // recording a new binding, and that is a keystroke like any other.
-        Self.log.notice("performing \(action.name, privacy: .public)")
         switch action {
         case .activate: onActivate?()
         case .deactivate: onDeactivate?()
@@ -451,11 +422,13 @@ private final class TapHost: @unchecked Sendable {
             CFRunLoopAddSource(loop, source, .commonModes)
             CGEvent.tapEnable(tap: tap, enable: true)
             host.publish(loop)
-            GlobalHotkeyMonitor.log.notice("tap thread running, enabled=\(CGEvent.tapIsEnabled(tap: tap), privacy: .public)")
+
+            // The one line worth keeping: a tap that reports itself installed but not
+            // enabled receives nothing, and every screen still says "Listening".
+            GlobalHotkeyMonitor.log.notice("tap enabled=\(CGEvent.tapIsEnabled(tap: tap), privacy: .public)")
 
             CFRunLoopRun()
 
-            GlobalHotkeyMonitor.log.notice("tap thread run loop exited")
             CFRunLoopRemoveSource(loop, source, .commonModes)
         }
         thread.name = "com.inscribe.hotkey-tap"
@@ -488,9 +461,6 @@ private final class TapHost: @unchecked Sendable {
     }
 }
 
-/// Counts what the tap receives. Written only on the tap's own thread.
-private nonisolated(unsafe) var tapEventCount = 0
-
 // MARK: - C Callback
 
 /// Runs on the tap's own thread. Reads what it needs from the event, decides, and
@@ -507,13 +477,6 @@ private func hotkeyEventTapCallback(
     if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
         monitor.tapWasDisabled(byTimeout: type == .tapDisabledByTimeout)
         return nil
-    }
-
-    // Event types only, never the key of an ordinary keystroke: this says whether
-    // the tap is receiving anything at all.
-    tapEventCount += 1
-    if tapEventCount <= 10 || tapEventCount % 50 == 0 {
-        GlobalHotkeyMonitor.log.notice("tap saw event #\(tapEventCount, privacy: .public) type=\(type.rawValue, privacy: .public)")
     }
 
     let keyCode = CGKeyCode(event.getIntegerValueField(.keyboardEventKeycode))
