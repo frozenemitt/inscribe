@@ -344,18 +344,34 @@ final class TranscriptionEngine {
         // Finalize transcription
         analyzerInputContinuation?.finish()
 
+        var finalized = true
         do {
             try await speechAnalyzer?.finalizeAndFinishThroughEndOfInput()
         } catch {
+            finalized = false
             Self.log.error("finalize failed: \(error, privacy: .public)")
             self.error = .transcriptionFailed(error.localizedDescription)
         }
         Self.log.notice("finalize returned at \(Self.seconds(since: sessionStart), format: .fixed(precision: 2), privacy: .public)s, transcript=\(self.currentTranscript.count, privacy: .public) chars, volatile=\(self.volatileText.count, privacy: .public) chars")
 
-        // Cancel recognition task and give it time to clean up
-        recognitionTask?.cancel()
-        try? await Task.sleep(nanoseconds: 100_000_000)  // 100ms for cleanup
-        Self.log.notice("after cancel+100ms at \(Self.seconds(since: sessionStart), format: .fixed(precision: 2), privacy: .public)s, transcript=\(self.currentTranscript.count, privacy: .public) chars, volatile=\(self.volatileText.count, privacy: .public) chars")
+        // Drained rather than cancelled, for the same reason the audio stream above is.
+        //
+        // The transcriber holds a whole dictation as unconfirmed text and only turns it
+        // into finalized runs when `finalizeAndFinishThroughEndOfInput` asks it to. That
+        // call also ends the results stream, so awaiting the task here consumes every
+        // one of those runs and returns when the stream does. Cancelling instead broke
+        // the loop on its next turn and threw the entire dictation away, leaving only
+        // whatever volatile snapshot happened to be held — a word or two of a long
+        // sentence, delivered without any error to say the rest was dropped.
+        //
+        // A finalize that threw leaves no promise that the stream will end, so that one
+        // case still cancels.
+        if finalized {
+            _ = try? await recognitionTask?.value
+        } else {
+            recognitionTask?.cancel()
+        }
+        Self.log.notice("results drained at \(Self.seconds(since: sessionStart), format: .fixed(precision: 2), privacy: .public)s, transcript=\(self.currentTranscript.count, privacy: .public) chars, volatile=\(self.volatileText.count, privacy: .public) chars")
 
         recognitionTask = nil
         teardownSession()
