@@ -89,49 +89,9 @@ final class TranscriptionEngine {
     private let bufferConverter = BufferConverter()
     private var analyzerFormat: AVAudioFormat?
 
-    // MARK: - Latency Measurement
-
-    /// Written to the unified log, so a dictation that goes wrong in a launched app
-    /// still leaves evidence. `print` reaches nobody outside Xcode.
+    /// Rare, and worth keeping: a dictation that goes wrong in a launched app leaves
+    /// no other trace, because `print` reaches nobody outside Xcode.
     nonisolated static let log = Logger(subsystem: "com.inscribe.app", category: "Dictation")
-
-    /// When audio started flowing, which is time zero for every latency number below.
-    private var sessionStart: ContinuousClock.Instant?
-
-    /// Reports how long the main actor goes unattended while a session runs.
-    private var heartbeatTask: Task<Void, Never>?
-
-    /// Seconds since `start`, on a clock no wall-clock adjustment can move.
-    nonisolated static func seconds(since start: ContinuousClock.Instant) -> Double {
-        let elapsed = ContinuousClock.now - start
-        return Double(elapsed.components.seconds)
-            + Double(elapsed.components.attoseconds) / 1e18
-    }
-
-    /// Log every stretch the main actor spends unable to answer.
-    ///
-    /// Results are consumed on the main actor, so anything that holds it up holds up
-    /// the words. This says whether that is happening and for how long.
-    private func startHeartbeat() {
-        heartbeatTask?.cancel()
-        heartbeatTask = Task { @MainActor in
-            var last = ContinuousClock.now
-            while !Task.isCancelled {
-                try? await Task.sleep(for: .milliseconds(50))
-                let now = ContinuousClock.now
-                let gap = Self.seconds(since: last)
-                last = now
-                if gap > 0.15 {
-                    Self.log.notice("main actor stalled \(gap, format: .fixed(precision: 3), privacy: .public)s")
-                }
-            }
-        }
-    }
-
-    private func stopHeartbeat() {
-        heartbeatTask?.cancel()
-        heartbeatTask = nil
-    }
 
     // MARK: - Configuration
 
@@ -253,10 +213,6 @@ final class TranscriptionEngine {
         // AVAudioEngine.stop() on whichever thread does the releasing.
         self.audioCaptureHelper = helper
 
-        // Time zero for every latency number, set before any audio can be read.
-        let sessionStart = ContinuousClock.now
-        self.sessionStart = sessionStart
-
         // Start processing task to convert and feed audio to analyzer
         let analyzerContinuation = analyzerInputContinuation
         let targetFormat = analyzerFormat!
@@ -264,18 +220,11 @@ final class TranscriptionEngine {
         let tap = audioTap
 
         audioProcessingTask = Task.detached {
-            Self.log.notice("audio task started")
-
             let converter = BufferConverter()
             var bufferCount = 0
-            var successCount = 0
-            var failureCount = 0
-            var audioSeconds = 0.0
 
             for await audioData in audioStream {
                 bufferCount += 1
-                audioSeconds += Double(audioData.buffer.frameLength)
-                    / audioData.buffer.format.sampleRate
 
                 // Hand the untouched buffer to any second consumer before conversion,
                 // so diarization sees the same audio the transcriber does.
@@ -285,24 +234,13 @@ final class TranscriptionEngine {
                     let converted = try converter.convertBuffer(audioData.buffer, to: targetFormat)
                     let input = AnalyzerInput(buffer: converted)
                     analyzerContinuation?.yield(input)
-                    successCount += 1
                 } catch {
-                    failureCount += 1
                     Self.log.error("conversion failed on buffer #\(bufferCount, privacy: .public): \(error, privacy: .public)")
                 }
-
-                // Every hundred buffers, say whether audio is reaching the analyzer as
-                // fast as it is spoken. Drift above zero means the feed itself is late.
-                if bufferCount % 100 == 0 {
-                    let elapsed = Self.seconds(since: sessionStart)
-                    Self.log.notice("audio fed=\(audioSeconds, format: .fixed(precision: 2), privacy: .public)s elapsed=\(elapsed, format: .fixed(precision: 2), privacy: .public)s drift=\(elapsed - audioSeconds, format: .fixed(precision: 2), privacy: .public)s buffers=\(bufferCount, privacy: .public)")
-                }
             }
-            Self.log.notice("audio task ended buffers=\(bufferCount, privacy: .public) converted=\(successCount, privacy: .public) failed=\(failureCount, privacy: .public) audio=\(audioSeconds, format: .fixed(precision: 2), privacy: .public)s elapsed=\(Self.seconds(since: sessionStart), format: .fixed(precision: 2), privacy: .public)s")
         }
 
         phase = .recording
-        startHeartbeat()
         Self.log.notice("recording started for \(owner.rawValue, privacy: .public)")
     }
 
@@ -321,13 +259,9 @@ final class TranscriptionEngine {
             return currentTranscript
         }
 
-        let sessionStart = self.sessionStart ?? .now
-        Self.log.notice("stop requested at \(Self.seconds(since: sessionStart), format: .fixed(precision: 2), privacy: .public)s, transcript=\(self.currentTranscript.count, privacy: .public) chars, volatile=\(self.volatileText.count, privacy: .public) chars")
-
         // Held, not released: nothing else may take the engine until this session has
         // finished handing back its words.
         phase = .stopping
-        stopHeartbeat()
 
         // Stop audio capture helper. This finishes the audio stream, so the task
         // below runs out of buffers on its own.
@@ -339,7 +273,6 @@ final class TranscriptionEngine {
         // always the end of the sentence the user just spoke.
         await audioProcessingTask?.value
         audioProcessingTask = nil
-        Self.log.notice("audio drained at \(Self.seconds(since: sessionStart), format: .fixed(precision: 2), privacy: .public)s, transcript=\(self.currentTranscript.count, privacy: .public) chars")
 
         // Finalize transcription
         analyzerInputContinuation?.finish()
@@ -352,8 +285,6 @@ final class TranscriptionEngine {
             Self.log.error("finalize failed: \(error, privacy: .public)")
             self.error = .transcriptionFailed(error.localizedDescription)
         }
-        Self.log.notice("finalize returned at \(Self.seconds(since: sessionStart), format: .fixed(precision: 2), privacy: .public)s, transcript=\(self.currentTranscript.count, privacy: .public) chars, volatile=\(self.volatileText.count, privacy: .public) chars")
-
         // Drained rather than cancelled, for the same reason the audio stream above is.
         //
         // The transcriber holds a whole dictation as unconfirmed text and only turns it
@@ -371,8 +302,6 @@ final class TranscriptionEngine {
         } else {
             recognitionTask?.cancel()
         }
-        Self.log.notice("results drained at \(Self.seconds(since: sessionStart), format: .fixed(precision: 2), privacy: .public)s, transcript=\(self.currentTranscript.count, privacy: .public) chars, volatile=\(self.volatileText.count, privacy: .public) chars")
-
         recognitionTask = nil
         teardownSession()
 
@@ -404,7 +333,6 @@ final class TranscriptionEngine {
         }
 
         Self.log.notice("recording cancelled")
-        stopHeartbeat()
         release()
 
         audioCaptureHelper?.stopCapture()
@@ -499,7 +427,10 @@ final class TranscriptionEngine {
         speechTranscriber = SpeechTranscriber(
             locale: locale,
             transcriptionOptions: [],
-            reportingOptions: [.volatileResults],
+            // `.fastResults` is what puts words on the overlay while you are still
+            // speaking. Without it the transcriber holds its unconfirmed text back and
+            // the preview trails several seconds behind the voice.
+            reportingOptions: [.volatileResults, .fastResults],
             attributeOptions: [.audioTimeRange]
         )
 
@@ -538,33 +469,19 @@ final class TranscriptionEngine {
 
         // Start recognition task to process results
         recognitionTask = Task { [weak self] in
-            Self.log.notice("recognition task started")
             var resultCount = 0
-            var lastLoggedVolatile = 0.0
-            var endedByCancel = false
             do {
                 for try await result in transcriber.results {
                     // Check for cancellation
                     guard !Task.isCancelled else {
                         // The one line that says whether stopping threw words away: a
                         // stream that ended on its own never reaches this.
-                        endedByCancel = true
-                        Self.log.error("recognition task CANCELLED after \(resultCount, privacy: .public) results — anything still queued was dropped")
+                        Self.log.error("recognition task cancelled after \(resultCount, privacy: .public) results — anything still queued was dropped")
                         break
                     }
 
                     let text = String(result.text.characters)
                     resultCount += 1
-
-                    // How far behind the speech this result arrived. `audioEnd` is the
-                    // moment in the recording the words cover; `elapsed` is the clock.
-                    let audioEnd = result.range.end.seconds
-                    let elapsed = self?.sessionStart.map { Self.seconds(since: $0) } ?? 0
-                    let shouldLog = result.isFinal || elapsed - lastLoggedVolatile > 0.5
-                    if shouldLog {
-                        if !result.isFinal { lastLoggedVolatile = elapsed }
-                        Self.log.notice("result #\(resultCount, privacy: .public) final=\(result.isFinal, privacy: .public) audioEnd=\(audioEnd, format: .fixed(precision: 2), privacy: .public)s elapsed=\(elapsed, format: .fixed(precision: 2), privacy: .public)s lag=\(elapsed - audioEnd, format: .fixed(precision: 2), privacy: .public)s chars=\(text.count, privacy: .public)")
-                    }
 
                     // Update state on MainActor
                     // Read the run attributes off the actor, then hand over plain values.
@@ -584,9 +501,6 @@ final class TranscriptionEngine {
                             self.volatileText = text
                         }
                     }
-                }
-                if !endedByCancel {
-                    Self.log.notice("recognition stream ended on its own after \(resultCount, privacy: .public) results")
                 }
             } catch {
                 Self.log.error("recognition failed after \(resultCount, privacy: .public) results: \(error, privacy: .public)")

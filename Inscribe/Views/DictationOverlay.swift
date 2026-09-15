@@ -110,7 +110,6 @@ private struct DictationOverlayView: View {
                 .lineLimit(2)
                 .truncationMode(.head)
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .animation(.easeOut(duration: 0.12), value: model.text)
         }
         .padding(.horizontal, 18)
         .padding(.vertical, 14)
