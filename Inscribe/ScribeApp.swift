@@ -79,7 +79,7 @@ struct ScribeApp: App {
     }()
 
     #if os(macOS)
-    @State private var hotkeyMonitor = GlobalHotkeyMonitor()
+    @State private var hotkeyMonitor = GlobalHotkeyMonitor.shared
     @State private var hasSetupHotkey = false
     #endif
 
