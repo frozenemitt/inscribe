@@ -298,6 +298,29 @@ struct ScribeApp: App {
         if let error = hotkeyMonitor.lastError {
             print("[ScribeApp] Hotkey error: \(error)")
         }
+
+        if !started { armWhenTrustArrives() }
+    }
+
+    /// Keep trying to install the tap until Accessibility trust shows up.
+    ///
+    /// `AXIsProcessTrusted()` answers false while the app is still finishing launch,
+    /// even when access has been granted, so the single check above reads it as
+    /// missing and the tap never gets built. Nothing retried: the menu bar said
+    /// "Not listening", the key did nothing, and the only way out was to open
+    /// Settings and nudge a hotkey field, because changing one calls `rearm()`.
+    /// It also covers access granted minutes later, without a relaunch.
+    private func armWhenTrustArrives() {
+        Task { @MainActor in
+            while !hotkeyMonitor.isRunning {
+                try? await Task.sleep(for: .seconds(2))
+                guard AccessibilityPermission.isTrusted else { continue }
+                if hotkeyMonitor.start() {
+                    print("[ScribeApp] Accessibility arrived, hotkey now listening")
+                    return
+                }
+            }
+        }
     }
     #endif
 
