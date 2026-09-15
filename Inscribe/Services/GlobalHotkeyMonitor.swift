@@ -158,6 +158,15 @@ final class GlobalHotkeyMonitor {
     // isolation opt-out rather than the whole class.
     @ObservationIgnored nonisolated(unsafe) private var host: TapHost?
 
+    /// The tap port, kept separately from the host that runs it.
+    ///
+    /// macOS can switch a tap off in the same millisecond it is created, and the
+    /// callback saying so arrives on the tap's own thread — which `TapHost.init`
+    /// starts before returning, so `host` is still nil when it lands. Re-enabling
+    /// through `host` dropped that first call and the tap stayed dead for the life of
+    /// the app, while `isRunning` went on reporting it as listening.
+    @ObservationIgnored nonisolated(unsafe) private var tapPort: CFMachPort?
+
     // MARK: - Lifecycle
 
     init() {
@@ -174,6 +183,7 @@ final class GlobalHotkeyMonitor {
         emit.finish()
         pump?.cancel()
         host?.invalidate()
+        tapPort = nil
     }
 
     // MARK: - Public API
@@ -220,6 +230,9 @@ final class GlobalHotkeyMonitor {
             return false
         }
 
+        // Assigned before the host exists, so the thread the host starts can always
+        // find it.
+        tapPort = tap
         host = TapHost(tap: tap)
         isRunning = true
         lastError = nil
@@ -231,6 +244,7 @@ final class GlobalHotkeyMonitor {
     func stop() {
         host?.invalidate()
         host = nil
+        tapPort = nil
         tapState.withLock { $0.isKeyDown = false }
         isRunning = false
     }
@@ -346,7 +360,11 @@ final class GlobalHotkeyMonitor {
     /// gets said out loud rather than quietly patched over.
     fileprivate nonisolated func tapWasDisabled(byTimeout: Bool) {
         Self.log.error("tap disabled by \(byTimeout ? "TIMEOUT" : "user input", privacy: .public), re-enabling")
-        host?.reenable()
+        guard let tapPort else {
+            Self.log.error("no tap port to re-enable")
+            return
+        }
+        CGEvent.tapEnable(tap: tapPort, enable: true)
     }
 
     // MARK: - Main Actor
