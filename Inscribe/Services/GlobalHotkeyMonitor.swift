@@ -181,6 +181,16 @@ final class GlobalHotkeyMonitor {
 
     // MARK: - Lifecycle
 
+    /// The one monitor in the process.
+    ///
+    /// `ScribeApp` wires the launch callback inside its `init`, which captures a copy
+    /// of the App struct — and a `@State` default built in that copy is not the
+    /// instance SwiftUI installs. Launch armed one monitor while the menu bar and the
+    /// Settings screen observed another, so the tap was created against an object
+    /// nothing else could see, and every screen reported "Not listening" while the
+    /// Globe key did nothing. One instance makes the two the same object.
+    static let shared = GlobalHotkeyMonitor()
+
     init() {
         let (stream, continuation) = AsyncStream.makeStream(of: HotkeyAction.self)
         emit = continuation
