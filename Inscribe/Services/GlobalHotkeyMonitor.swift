@@ -351,6 +351,12 @@ final class GlobalHotkeyMonitor {
             }
         }
 
+        // Temporary: what the Globe key is actually doing. Modifier events carry no
+        // typed characters, so nothing of what the user writes reaches this.
+        if type == .flagsChanged, keyCode == fnKeyCode {
+            Self.log.notice("globe \(flags.contains(.maskSecondaryFn) ? "DOWN" : "UP", privacy: .public) isKeyDown-was=\(self.tapState.withLock { $0.isKeyDown }, privacy: .public) action=\(String(describing: action).prefix(24), privacy: .public)")
+        }
+
         if let action { emit.yield(action) }
         return swallow
     }
@@ -378,6 +384,7 @@ final class GlobalHotkeyMonitor {
     // MARK: - Main Actor
 
     private func perform(_ action: HotkeyAction) {
+        Self.log.notice("performing \(String(describing: action).prefix(24), privacy: .public)")
         switch action {
         case .activate: onActivate?()
         case .deactivate: onDeactivate?()
