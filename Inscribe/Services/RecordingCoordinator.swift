@@ -198,6 +198,13 @@ final class RecordingCoordinator {
             return
         }
 
+        // Load the model while the user is still speaking. It has to be in memory
+        // before it can answer, and that load used to begin only once they had
+        // finished — seconds of waiting bolted onto seconds of talking.
+        if settings.aiEnabled, !skipAIOnce {
+            aiProcessor.prewarm(promptId: effectivePromptId)
+        }
+
         // Sounded only once capture is live, so the user does not talk over the gap.
         AudioFeedbackService.shared.playIfEnabled(.recordingStarted, settings: settings)
         startMaxDurationWatchdog()
@@ -378,6 +385,7 @@ final class RecordingCoordinator {
         #endif
 
         engine.cancelRecording(owner: .dictation)
+        aiProcessor.discardPrewarm()
         skipAIOnce = false
         lastDestination = nil
         AudioFeedbackService.shared.playIfEnabled(.recordingStopped, settings: settings)

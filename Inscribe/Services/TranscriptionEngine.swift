@@ -180,7 +180,12 @@ final class TranscriptionEngine {
             phase = .starting
         }
 
-        Log.dictation.notice("Starting recording...")
+
+
+        // How long the key press waits before a word can be spoken. Everything below
+        // runs before the microphone is open: the locale, the transcriber, the
+        // analyzer, the asset check, the format negotiation.
+        let startedAt = ContinuousClock.now
 
         // A previous start that threw part-way leaves an analyzer and a capture
         // helper alive with isRecording still false, which no stop path will ever
