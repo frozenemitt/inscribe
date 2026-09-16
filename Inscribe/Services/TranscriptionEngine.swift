@@ -48,17 +48,11 @@ final class TranscriptionEngine {
     /// down the meeting's session while the meeting UI carries on as if recording.
     private(set) var owner: SessionOwner?
 
-    /// How loud the microphone is right now, 0 to 1.
-    ///
-    /// Read by the dictation overlay so its band moves with the voice. Taken from the
-    /// buffers already on their way to the analyzer, so nothing opens the microphone
-    /// a second time.
-    private(set) var inputLevel: Double = 0
-
     /// Loudness per frequency band, 0 to 1, low to high.
     ///
-    /// One value per bar of the dictation overlay's band, read off the same buffers as
-    /// `inputLevel`. Empty until a recording starts.
+    /// One value per bar of the dictation overlay's band, read off the buffers already
+    /// on their way to the analyzer so nothing opens the microphone twice. Empty until
+    /// a recording starts, and not computed at all when nothing is drawing it.
     private(set) var spectrum: [Double] = []
 
     private(set) var currentTranscript = ""
@@ -160,10 +154,14 @@ final class TranscriptionEngine {
     /// - Parameters:
     ///   - contextualStrings: Terms to bias the recognizer toward — names, jargon.
     ///   - inputDeviceUID: CoreAudio UID of the microphone, or "default".
+    /// - Parameter publishesSpectrum: whether anything is going to draw the band. The
+    ///   Fourier transform behind it runs on every buffer, and running it for a panel
+    ///   nobody has switched on is work spent on a picture that is never drawn.
     func startRecording(
         owner: SessionOwner = .dictation,
         contextualStrings: [String] = [],
-        inputDeviceUID: String = "default"
+        inputDeviceUID: String = "default",
+        publishesSpectrum: Bool = false
     ) async throws {
         // Thrown rather than returned: a caller that silently "succeeds" here goes on to
         // set up its own UI for a session that does not exist, and only finds out when
@@ -196,7 +194,6 @@ final class TranscriptionEngine {
         currentTranscript = ""
         volatileText = ""
         timedSegments = []
-        inputLevel = 0
         spectrum = []
 
         // Check authorization
@@ -241,7 +238,9 @@ final class TranscriptionEngine {
 
         audioProcessingTask = Task.detached(priority: .userInitiated) { [weak self] in
             let converter = BufferConverter()
-            let spectrumAnalyzer = SpectrumAnalyzer(bandCount: TranscriptionEngine.spectrumBandCount)
+            let spectrumAnalyzer = publishesSpectrum
+                ? SpectrumAnalyzer(bandCount: TranscriptionEngine.spectrumBandCount)
+                : nil
             var bufferCount = 0
 
             for await audioData in audioStream {
@@ -251,11 +250,8 @@ final class TranscriptionEngine {
                 // so diarization sees the same audio the transcriber does.
                 tap?(audioData.buffer)
 
-                let level = Self.level(of: audioData.buffer)
-                let bands = spectrumAnalyzer?.bands(from: audioData.buffer)
-                await MainActor.run {
-                    self?.applyLevel(level)
-                    if let bands { self?.applySpectrum(bands) }
+                if let bands = spectrumAnalyzer?.bands(from: audioData.buffer) {
+                    await MainActor.run { self?.applySpectrum(bands) }
                 }
 
                 do {
@@ -295,8 +291,17 @@ final class TranscriptionEngine {
 
         // Stop audio capture helper. This finishes the audio stream, so the task
         // below runs out of buffers on its own.
+        // Temporary: where the time between key-up and text actually goes.
+        let stopBegan = ContinuousClock.now
+        func since(_ mark: ContinuousClock.Instant) -> Double {
+            let d = ContinuousClock.now - mark
+            return Double(d.components.seconds) + Double(d.components.attoseconds) / 1e18
+        }
+
         audioCaptureHelper?.stopCapture()
         audioCaptureHelper = nil
+        Log.dictation.notice("stopCapture \(since(stopBegan), format: .fixed(precision: 3), privacy: .public)s")
+        let afterCapture = ContinuousClock.now
 
         // Awaited rather than cancelled. An AsyncStream iterator throws away whatever
         // is still buffered when it is cancelled, and what is still buffered is
@@ -305,6 +310,9 @@ final class TranscriptionEngine {
         audioProcessingTask = nil
 
         // Finalize transcription
+        Log.dictation.notice("drain \(since(afterCapture), format: .fixed(precision: 3), privacy: .public)s")
+        let afterDrain = ContinuousClock.now
+
         analyzerInputContinuation?.finish()
 
         var finalized = true
@@ -327,11 +335,16 @@ final class TranscriptionEngine {
         //
         // A finalize that threw leaves no promise that the stream will end, so that one
         // case still cancels.
+        Log.dictation.notice("finalize \(since(afterDrain), format: .fixed(precision: 3), privacy: .public)s")
+        let afterFinalize = ContinuousClock.now
+
         if finalized {
             _ = try? await recognitionTask?.value
         } else {
             recognitionTask?.cancel()
         }
+        Log.dictation.notice("results \(since(afterFinalize), format: .fixed(precision: 3), privacy: .public)s, total \(since(stopBegan), format: .fixed(precision: 3), privacy: .public)s")
+
         recognitionTask = nil
         teardownSession()
 
@@ -343,7 +356,6 @@ final class TranscriptionEngine {
 
         release()
 
-        inputLevel = 0
         spectrum = []
         Self.log.notice("recording stopped, delivering \(self.currentTranscript.count, privacy: .public) chars")
         return currentTranscript
@@ -373,37 +385,6 @@ final class TranscriptionEngine {
         }
     }
 
-    /// Fold a new reading into the level, fast to rise and slow to fall.
-    ///
-    /// A bar following raw loudness flickers, because speech is full of gaps between
-    /// syllables. Rising almost immediately and falling over about a fifth of a second
-    /// tracks the voice rather than the waveform, while still keeping up with it.
-    private func applyLevel(_ reading: Double) {
-        inputLevel = reading > inputLevel
-            ? inputLevel + (reading - inputLevel) * 0.75
-            : inputLevel + (reading - inputLevel) * 0.45
-    }
-
-    /// Loudness of one buffer, as 0 to 1 across the range a voice actually occupies.
-    ///
-    /// The ends are measured, not guessed. On this microphone a quiet room reads -51
-    /// dB, soft speech -48 to -39, and a raised voice -25 to -19. A window wider than
-    /// that spends itself on silences the microphone never reaches and leaves the top
-    /// of the band unreachable, which is what made a whisper and a shout look alike.
-    private nonisolated static func level(of buffer: AVAudioPCMBuffer) -> Double {
-        guard let samples = buffer.floatChannelData?[0], buffer.frameLength > 0 else { return 0 }
-
-        var sum: Float = 0
-        for i in 0..<Int(buffer.frameLength) {
-            sum += samples[i] * samples[i]
-        }
-        let rms = (sum / Float(buffer.frameLength)).squareRoot()
-        guard rms > 0 else { return 0 }
-
-        let decibels = 20 * log10(Double(rms))
-        return min(max((decibels + 45) / 25, 0), 1)
-    }
-
     /// Hand the engine back.
     private func release() {
         self.owner = nil
@@ -431,7 +412,6 @@ final class TranscriptionEngine {
 
         currentTranscript = ""
         volatileText = ""
-        inputLevel = 0
         spectrum = []
     }
 

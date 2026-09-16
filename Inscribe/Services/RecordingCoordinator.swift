@@ -189,7 +189,8 @@ final class RecordingCoordinator {
             try await engine.startRecording(
                 owner: .dictation,
                 contextualStrings: settings.vocabularyHints,
-                inputDeviceUID: settings.inputDeviceUID
+                inputDeviceUID: settings.inputDeviceUID,
+                publishesSpectrum: settings.showDictationOverlay
             )
         } catch {
             AudioFeedbackService.shared.playIfEnabled(.error, settings: settings)
