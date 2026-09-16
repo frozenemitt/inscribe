@@ -153,6 +153,21 @@ final class GlobalHotkeyMonitor {
 
     @ObservationIgnored nonisolated(unsafe) private var pump: Task<Void, Never>?
 
+    /// A release waiting to be believed. See `perform`.
+    private var pendingRelease: Task<Void, Never>?
+
+    /// When the last toggle was acted on, so chatter cannot fire a second one.
+    private var lastToggle: ContinuousClock.Instant?
+
+    /// How long a release has to stand before it counts.
+    ///
+    /// The Globe key chatters while held: the system sends a release and another press
+    /// about every hundred and twenty milliseconds, which is indistinguishable from a
+    /// real tap except that a real one is not followed by a press. Every one of those
+    /// ended the recording, and since bringing a recording up takes about as long as
+    /// the gap, dictation stopped working at all rather than merely stuttering.
+    private static let releaseGrace: Duration = .milliseconds(250)
+
     // deinit is nonisolated and has to tear the tap down, so this carries the
     // isolation opt-out rather than the whole class.
     @ObservationIgnored nonisolated(unsafe) private var host: TapHost?
@@ -351,12 +366,6 @@ final class GlobalHotkeyMonitor {
             }
         }
 
-        // Temporary: what the Globe key is actually doing. Modifier events carry no
-        // typed characters, so nothing of what the user writes reaches this.
-        if type == .flagsChanged, keyCode == fnKeyCode {
-            Self.log.notice("globe \(flags.contains(.maskSecondaryFn) ? "DOWN" : "UP", privacy: .public) isKeyDown-was=\(self.tapState.withLock { $0.isKeyDown }, privacy: .public) action=\(String(describing: action).prefix(24), privacy: .public)")
-        }
-
         if let action { emit.yield(action) }
         return swallow
     }
@@ -384,11 +393,33 @@ final class GlobalHotkeyMonitor {
     // MARK: - Main Actor
 
     private func perform(_ action: HotkeyAction) {
-        Self.log.notice("performing \(String(describing: action).prefix(24), privacy: .public)")
         switch action {
-        case .activate: onActivate?()
-        case .deactivate: onDeactivate?()
-        case .toggle: onToggle?()
+        case .activate:
+            // A press arriving while a release is still waiting means the release was
+            // chatter and the key never came up. Drop both: the recording is already
+            // running and must not be restarted.
+            if let pendingRelease {
+                pendingRelease.cancel()
+                self.pendingRelease = nil
+                return
+            }
+            onActivate?()
+
+        case .deactivate:
+            pendingRelease?.cancel()
+            pendingRelease = Task { @MainActor [weak self] in
+                try? await Task.sleep(for: Self.releaseGrace)
+                guard !Task.isCancelled, let self else { return }
+                self.pendingRelease = nil
+                self.onDeactivate?()
+            }
+
+        case .toggle:
+            // Same chatter, and in this mode each burst would flip the recording on and
+            // off several times a second.
+            if let lastToggle, ContinuousClock.now - lastToggle < Self.releaseGrace { return }
+            lastToggle = .now
+            onToggle?()
         case .cancel: onCancel?()
         case .undo: onUndo?()
         case let .capture(keyCode, modifiers): onCapture?(keyCode, modifiers)
