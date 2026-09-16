@@ -51,7 +51,8 @@ final class MeetingIndicatorController {
     }
 
     private func applyTint() {
-        glassView?.tintColor = NSColor.black.withAlphaComponent(settings.overlayOpacity * 0.7)
+        panel?.alphaValue = settings.overlayOpacity
+        glassView?.tintColor = NSColor.black.withAlphaComponent(0.22)
     }
 
     private func makePanel() -> NSPanel {

@@ -1326,7 +1326,7 @@ struct OutputSettingsView: View {
                             .frame(width: 44, alignment: .trailing)
                     }
 
-                    Text("The panel is glass. Turn it down to read the window underneath through it, up when the text matters more than what it covers. The words stay just as legible either way — only the pane changes.")
+                    Text("The panel is glass. Turn it down to read the window underneath through it, up when the text matters more than what it covers.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
 
