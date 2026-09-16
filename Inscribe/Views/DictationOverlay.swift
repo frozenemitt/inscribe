@@ -72,16 +72,21 @@ final class DictationOverlayController {
         growToFit()
     }
 
-    /// Darken or clear the glass, leaving the words alone.
+    /// Fade the whole panel, glass included.
     ///
-    /// Fading the window took the text with it, so turning the panel down to see the
-    /// document underneath also made the dictation harder to read — the two things
-    /// you were trading between were the same thing. Tint changes only the pane: at
-    /// the low end the window behind shows through, and the text stays exactly as
-    /// legible as it was.
+    /// Driving the glass tint instead was a mistake worth recording: tint can only
+    /// darken the material, never thin it, so the pane stayed just as solid at the
+    /// bottom of the slider as at the top. The window's alpha is the only thing that
+    /// actually lets the document behind show through, and it takes the text with it.
+    /// That trade is real and it is the user's to make.
     private func applyOpacity() {
-        guard let glassView else { return }
-        glassView.tintColor = NSColor.black.withAlphaComponent(settings.overlayOpacity * 0.7)
+        guard let panel, let glassView else { return }
+
+        let wanted = settings.overlayOpacity
+        if abs(panel.alphaValue - wanted) > 0.001 {
+            panel.alphaValue = wanted
+        }
+        glassView.tintColor = NSColor.black.withAlphaComponent(0.22)
     }
 
     func showProcessing() {
