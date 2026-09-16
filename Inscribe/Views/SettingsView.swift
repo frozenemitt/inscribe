@@ -1334,6 +1334,12 @@ struct OutputSettingsView: View {
                         coordinator.resetOverlayPosition()
                     }
                 }
+
+                Toggle("Show the microphone during meetings", isOn: $settings.showMeetingIndicator)
+
+                Text("A small panel with the same band, so an hour-long meeting shows it is still hearing the room rather than only that it is open. Drag it anywhere.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
 
             Section("Context") {
