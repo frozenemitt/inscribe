@@ -143,6 +143,22 @@ final class MeetingRecorder {
     private func startIndicator() {
         guard settings.showMeetingIndicator else { return }
         indicatorTicker?.cancel()
+
+        // The panel's buttons reach back here, so pausing or ending a meeting does not
+        // mean going to find the window it belongs to.
+        indicator.onPauseOrResume = { [weak self] in
+            Task { @MainActor in
+                guard let self else { return }
+                self.isPaused ? await self.resume() : await self.pause()
+            }
+        }
+        indicator.onStop = { [weak self] in
+            Task { @MainActor in
+                guard let self else { return }
+                await self.stop(in: ScribeApp.modelContainer.mainContext)
+            }
+        }
+
         indicator.show()
         indicatorTicker = Task { @MainActor [weak self] in
             while !Task.isCancelled {

@@ -22,8 +22,12 @@ final class MeetingIndicatorController {
     private let settings: AppSettings
     private var moveObserver: (any NSObjectProtocol)?
 
-    static let width: CGFloat = 188
-    static let height: CGFloat = 54
+    /// What the panel's two buttons do. Set by whoever owns the meeting.
+    var onPauseOrResume: (() -> Void)?
+    var onStop: (() -> Void)?
+
+    static let width: CGFloat = 232
+    static let height: CGFloat = 64
 
     init(settings: AppSettings) {
         self.settings = settings
@@ -76,6 +80,9 @@ final class MeetingIndicatorController {
         panel.isMovableByWindowBackground = true
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
 
+        model.pauseOrResume = { [weak self] in self?.onPauseOrResume?() }
+        model.stop = { [weak self] in self?.onStop?() }
+
         let hosting = NSHostingView(rootView: MeetingIndicatorView(model: model))
         hosting.translatesAutoresizingMaskIntoConstraints = false
 
@@ -86,7 +93,7 @@ final class MeetingIndicatorController {
         glass.tintColor = NSColor.black.withAlphaComponent(0.22)
         self.glassView = glass
 
-        let container = MeetingDragHandleView()
+        let container = NSView()
         container.addSubview(glass)
         container.addSubview(hosting)
         NSLayoutConstraint.activate([
@@ -140,16 +147,6 @@ final class MeetingIndicatorController {
     }
 }
 
-private final class MeetingDragHandleView: NSView {
-    override func hitTest(_ point: NSPoint) -> NSView? {
-        super.hitTest(point) == nil ? nil : self
-    }
-
-    override func mouseDown(with event: NSEvent) {
-        window?.performDrag(with: event)
-    }
-}
-
 @MainActor
 @Observable
 final class MeetingIndicatorModel {
@@ -157,6 +154,10 @@ final class MeetingIndicatorModel {
     var isPaused = false
     var seconds: TimeInterval = 0
     var contentOpacity: Double = 1.0
+
+    /// Handed in by the controller so the buttons can reach the meeting.
+    var pauseOrResume: () -> Void = {}
+    var stop: () -> Void = {}
 }
 
 private struct MeetingIndicatorView: View {
@@ -165,8 +166,12 @@ private struct MeetingIndicatorView: View {
     var body: some View {
         VStack(spacing: 6) {
             ListeningBar(spectrum: model.spectrum, isProcessing: false)
+                // Everything that is not a button lets the click through to the window,
+                // which is what drags the panel. SwiftUI content swallowing the mouse
+                // is why the dictation panel needed a drag view underneath it.
+                .allowsHitTesting(false)
 
-            HStack(spacing: 6) {
+            HStack(spacing: 10) {
                 Image(systemName: model.isPaused ? "pause.fill" : "record.circle")
                     .font(.caption)
                     .foregroundStyle(model.isPaused ? AnyShapeStyle(.secondary) : AnyShapeStyle(Color.red))
@@ -174,7 +179,22 @@ private struct MeetingIndicatorView: View {
                 Text(clock)
                     .font(.caption.monospacedDigit())
                     .foregroundStyle(.primary)
+
+                Spacer(minLength: 0)
+
+                Button(action: model.pauseOrResume) {
+                    Image(systemName: model.isPaused ? "play.fill" : "pause.fill")
+                }
+                .help(model.isPaused ? "Resume" : "Pause")
+
+                Button(action: model.stop) {
+                    Image(systemName: "stop.fill")
+                }
+                .help("Stop and save")
             }
+            .buttonStyle(.borderless)
+            .font(.caption)
+            .foregroundStyle(.primary)
         }
         .opacity(model.contentOpacity)
         .padding(.horizontal, 14)
