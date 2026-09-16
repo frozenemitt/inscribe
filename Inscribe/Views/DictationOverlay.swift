@@ -299,62 +299,83 @@ private struct ListeningBar: View {
     let spectrum: [Double]
     let isProcessing: Bool
 
-    private static let barCount = 48
+    private static let pointCount = 48
     private static let height: CGFloat = 22
 
     var body: some View {
         TimelineView(.animation) { context in
             let time = context.date.timeIntervalSinceReferenceDate
-            let amplitudes = (0..<Self.barCount).map { amplitude(index: $0, time: time) }
+            let amplitudes = (0..<Self.pointCount).map { amplitude(index: $0, time: time) }
+            let stops = isProcessing ? Self.processingStops : Self.voiceStops
 
-            ZStack {
-                // A blurred copy underneath, which is where the light comes from.
-                // Flat fills with hard edges read as an instrument panel; the same
-                // shape with a bloom around it reads as something lit from within,
-                // which is the whole difference over glass.
-                row(amplitudes)
-                    .blur(radius: 6)
-                    .opacity(0.55)
-
-                row(amplitudes)
+            Canvas { canvas, size in
+                canvas.fill(
+                    Self.ribbon(amplitudes: amplitudes, in: size),
+                    with: .linearGradient(
+                        Gradient(stops: stops),
+                        startPoint: CGPoint(x: size.width / 2, y: 0),
+                        endPoint: CGPoint(x: size.width / 2, y: size.height)
+                    )
+                )
             }
             .frame(height: Self.height)
         }
         .frame(height: Self.height)
     }
 
-    private func row(_ amplitudes: [Double]) -> some View {
-        HStack(alignment: .center, spacing: 3) {
-            ForEach(0..<Self.barCount, id: \.self) { index in
-                // The gradient is anchored to the band, not to the bar, and the bar is
-                // a window onto it. So every bar shows the same colour at the centre
-                // line, and only a tall one reaches the vivid ends — which makes the
-                // colour say the same thing the height does.
-                gradient
-                    .frame(height: Self.height)
-                    .mask {
-                        Capsule()
-                            .frame(height: Self.barHeight(for: amplitudes[index]))
-                    }
-            }
+    /// One closed shape through every band, mirrored about the centre line.
+    ///
+    /// Forty-eight separate bars read as a meter however they were coloured, and
+    /// blurring them only made a blurry meter. A single curve carries the same numbers
+    /// and reads as one moving thing, which is what the panel is trying to be.
+    private static func ribbon(amplitudes: [Double], in size: CGSize) -> Path {
+        guard amplitudes.count > 1 else { return Path() }
+
+        let middle = size.height / 2
+        let reach = middle - 2
+        let resting: CGFloat = 1.2
+        let step = size.width / CGFloat(amplitudes.count - 1)
+
+        let top = amplitudes.enumerated().map { index, value in
+            CGPoint(
+                x: CGFloat(index) * step,
+                y: middle - (resting + (reach - resting) * CGFloat(value))
+            )
         }
+        let bottom = top.reversed().map { CGPoint(x: $0.x, y: middle + (middle - $0.y)) }
+
+        var path = Path()
+        append(top, to: &path, starting: true)
+        append(bottom, to: &path, starting: false)
+        path.closeSubpath()
+        return path
     }
 
-    /// A resting bar is a soft line, not a dot.
-    ///
-    /// The floor used to be two points, so silence drew forty-eight separate dashes
-    /// and looked like something had failed. At four they meet into a quiet line that
-    /// reads as waiting.
-    private static func barHeight(for amplitude: Double) -> CGFloat {
-        4 + height * 0.82 * CGFloat(amplitude)
+    /// Curve through the points rather than joining them, so the shape has no corners.
+    private static func append(_ points: [CGPoint], to path: inout Path, starting: Bool) {
+        guard let first = points.first, let last = points.last else { return }
+
+        if starting {
+            path.move(to: first)
+        } else {
+            path.addLine(to: first)
+        }
+
+        for index in 0..<(points.count - 1) {
+            let current = points[index]
+            let next = points[index + 1]
+            let midpoint = CGPoint(x: (current.x + next.x) / 2, y: (current.y + next.y) / 2)
+            path.addQuadCurve(to: midpoint, control: current)
+        }
+        path.addLine(to: last)
     }
 
-    /// One bar per frequency band, straight from the microphone.
+    /// One point per frequency band, straight from the microphone.
     ///
-    /// Nothing here invents movement any more. Every bar is the loudness of its own
-    /// slice of the spectrum, so vowels fill the left of the band, an "s" lights the
-    /// right, and a silent room is a flat line. Only the AI pass, which has no audio
-    /// to show, still falls back to a moving shape.
+    /// Nothing here invents movement. Every point is the loudness of its own slice of
+    /// the spectrum, so vowels swell the left of the ribbon, an "s" lifts the right,
+    /// and a silent room is a thin line. Only the AI pass, which has no audio to show,
+    /// still falls back to a moving shape.
     private func amplitude(index: Int, time: TimeInterval) -> Double {
         if isProcessing {
             return 0.55 * (sin(time * 3.2 + Double(index) * 0.45) * 0.18 + 0.82)
@@ -362,30 +383,25 @@ private struct ListeningBar: View {
         return index < spectrum.count ? Self.curve(spectrum[index]) : 0
     }
 
-    private var gradient: LinearGradient {
-        LinearGradient(
-            stops: isProcessing ? Self.processingStops : Self.voiceStops,
-            startPoint: .top,
-            endPoint: .bottom
-        )
-    }
-
     /// Blue through the middle, out through purple to pink at the extremes.
     ///
-    /// Symmetric, because the bars grow from the centre line in both directions, so a
-    /// bar of any height is the same colour where it meets zero.
+    /// Symmetric, because the ribbon swells from the centre line in both directions,
+    /// so it is the same colour where it meets zero however thick it is. The ends
+    /// fade rather than stopping, so the edges dissolve instead of being cut off.
     private static let voiceStops: [Gradient.Stop] = [
-        .init(color: .pink, location: 0.0),
-        .init(color: .purple, location: 0.26),
-        .init(color: .blue.opacity(0.9), location: 0.5),
-        .init(color: .purple, location: 0.74),
-        .init(color: .pink, location: 1.0)
+        .init(color: .pink.opacity(0.5), location: 0.0),
+        .init(color: .pink.opacity(0.9), location: 0.14),
+        .init(color: .purple, location: 0.32),
+        .init(color: .blue, location: 0.5),
+        .init(color: .purple, location: 0.68),
+        .init(color: .pink.opacity(0.9), location: 0.86),
+        .init(color: .pink.opacity(0.5), location: 1.0)
     ]
 
     private static let processingStops: [Gradient.Stop] = [
-        .init(color: .yellow, location: 0.0),
+        .init(color: .orange.opacity(0.5), location: 0.0),
         .init(color: .orange, location: 0.5),
-        .init(color: .yellow, location: 1.0)
+        .init(color: .orange.opacity(0.5), location: 1.0)
     ]
 
     /// Spread the quiet end of the range and compress the loud one.
