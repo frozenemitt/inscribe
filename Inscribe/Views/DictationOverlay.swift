@@ -17,9 +17,6 @@ final class DictationOverlayController {
 
     private var panel: NSPanel?
     private let model = OverlayModel()
-
-    /// The glass behind the content, kept so its tint can follow the setting.
-    private var glassView: NSGlassEffectView?
     private let settings: AppSettings
     /// Held so the panel's move notifications keep arriving for the life of the app.
     private var moveObserver: (any NSObjectProtocol)?
@@ -74,19 +71,16 @@ final class DictationOverlayController {
 
     /// Fade the whole panel, glass included.
     ///
-    /// Driving the glass tint instead was a mistake worth recording: tint can only
-    /// darken the material, never thin it, so the pane stayed just as solid at the
-    /// bottom of the slider as at the top. The window's alpha is the only thing that
-    /// actually lets the document behind show through, and it takes the text with it.
-    /// That trade is real and it is the user's to make.
+    /// Two things learned the hard way. Driving the glass tint instead of the alpha
+    /// only darkens the material, never thins it, so nothing showed through at any
+    /// setting. And the tint is set once when the panel is built, not here: assigning
+    /// it twenty times a second makes the material recomposite on every tick and the
+    /// panel turns muddy.
     private func applyOpacity() {
-        guard let panel, let glassView else { return }
-
+        guard let panel else { return }
         let wanted = settings.overlayOpacity
-        if abs(panel.alphaValue - wanted) > 0.001 {
-            panel.alphaValue = wanted
-        }
-        glassView.tintColor = NSColor.black.withAlphaComponent(0.22)
+        guard abs(panel.alphaValue - wanted) > 0.001 else { return }
+        panel.alphaValue = wanted
     }
 
     func showProcessing() {
@@ -199,8 +193,9 @@ final class DictationOverlayController {
         // this gentle put almost none of the panel inside it. A larger radius gives
         // the effect somewhere to happen.
         glass.cornerRadius = 26
-        // The tint is the user's "How solid" setting; applyOpacity keeps it current.
-        self.glassView = glass
+        // Set once. Reassigning it per frame makes the material recomposite and the
+        // panel darkens as it goes.
+        glass.tintColor = NSColor.black.withAlphaComponent(0.22)
         glass.contentView = hosting
 
         let container = DragHandleView()
