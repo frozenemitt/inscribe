@@ -1,4 +1,5 @@
 import Foundation
+import os
 import AVFoundation
 import FluidAudio
 
@@ -94,7 +95,7 @@ actor MeetingDiarizer {
         receivedSeconds = 0
         turns.removeAll()
         lastError = nil
-        print("[MeetingDiarizer] Ready")
+        Log.diarization.notice("Ready")
     }
 
     /// Add newly captured audio, processing a chunk whenever enough has arrived.
@@ -184,12 +185,12 @@ actor MeetingDiarizer {
             }
 
             turns.append(contentsOf: new)
-            print("[MeetingDiarizer] Chunk at \(Int(offset))s produced \(new.count) turns")
+            Log.diarization.notice("Chunk at \(Int(offset), privacy: .public)s produced \(new.count, privacy: .public) turns")
         } catch {
             // One bad chunk should not end the meeting; the transcript still stands,
             // it just loses speaker labels for that stretch.
             lastError = error.localizedDescription
-            print("[MeetingDiarizer] Chunk at \(Int(offset))s failed: \(error)")
+            Log.diarization.error("Chunk at \(Int(offset), privacy: .public)s failed: \(error, privacy: .public)")
         }
     }
 }

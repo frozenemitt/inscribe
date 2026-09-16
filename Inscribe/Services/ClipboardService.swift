@@ -1,4 +1,5 @@
 import Foundation
+import os
 
 #if os(macOS)
 import AppKit
@@ -19,7 +20,7 @@ enum ClipboardService {
         UIPasteboard.general.string = text
         #endif
 
-        print("[ClipboardService] Copied \(text.count) characters to clipboard")
+        Log.clipboard.notice("Copied \(text.count, privacy: .public) characters to clipboard")
     }
 
     /// Read current clipboard contents (useful for testing)

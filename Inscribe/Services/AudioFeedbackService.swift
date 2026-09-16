@@ -1,4 +1,5 @@
 import Foundation
+import os
 import AVFoundation
 
 #if os(iOS)
@@ -155,7 +156,7 @@ final class NotificationService {
                 let center = UNUserNotificationCenter.current()
                 try await center.requestAuthorization(options: [.alert, .sound, .badge])
             } catch {
-                print("[NotificationService] Authorization failed: \(error)")
+                Log.notifications.error("Authorization failed: \(error, privacy: .public)")
             }
         }
     }

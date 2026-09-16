@@ -1,4 +1,5 @@
 import SwiftUI
+import os
 import SwiftData
 
 #if os(macOS)
@@ -612,7 +613,7 @@ private struct MeetingDetailView: View {
         do {
             try MeetingExporter.export(meeting, as: format).write(to: url, atomically: true, encoding: .utf8)
         } catch {
-            print("[MeetingsView] Export failed: \(error)")
+            Log.meetings.error("Export failed: \(error, privacy: .public)")
         }
     }
 }

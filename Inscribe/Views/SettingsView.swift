@@ -1384,6 +1384,63 @@ struct OutputSettingsView: View {
 // MARK: - About Settings
 
 struct AboutSettingsView: View {
+    /// This run's own log, so a dictation that went wrong can be explained without
+    /// anyone opening a terminal.
+    @ViewBuilder
+    private var diagnostics: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            if entries.isEmpty {
+                Text("Nothing recorded yet this run. Dictate once and come back.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } else {
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 2) {
+                        ForEach(entries.reversed()) { entry in
+                            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                                Text(entry.date, format: .dateTime.hour().minute().second())
+                                    .font(.caption2.monospacedDigit())
+                                    .foregroundStyle(.tertiary)
+
+                                Text(entry.category)
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
+                                    .frame(width: 72, alignment: .leading)
+
+                                Text(entry.message)
+                                    .font(.caption2)
+                                    .foregroundStyle(entry.isProblem ? Color.orange : .primary)
+                                    .textSelection(.enabled)
+                            }
+                        }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .frame(height: 220)
+            }
+
+            HStack {
+                Button("Refresh") { reload() }
+                Button("Copy") {
+                    ClipboardService.copy(Diagnostics.asText(entries))
+                }
+                .disabled(entries.isEmpty)
+            }
+
+            Text("Only this run, and only Inscribe. Anything you wrote or said is redacted by the system before it gets here.")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+        }
+        .padding(.top, 8)
+    }
+
+    private func reload() {
+        entries = (try? Diagnostics.recent()) ?? []
+    }
+
+    @State private var entries: [Diagnostics.Entry] = []
+    @State private var showingDiagnostics = false
+
     var body: some View {
         VStack(spacing: 20) {
             Spacer()
@@ -1403,6 +1460,20 @@ struct AboutSettingsView: View {
             Text("Version 1.0.0")
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
+
+            Divider()
+                .frame(width: 200)
+
+            DisclosureGroup(isExpanded: $showingDiagnostics) {
+                diagnostics
+            } label: {
+                Label("What Inscribe has been doing", systemImage: "stethoscope")
+                    .font(.subheadline)
+            }
+            .frame(maxWidth: 520)
+            .onChange(of: showingDiagnostics) { _, shown in
+                if shown { reload() }
+            }
 
             Divider()
                 .frame(width: 200)

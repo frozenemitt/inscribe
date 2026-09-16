@@ -1,4 +1,5 @@
 import Foundation
+import os
 import ActivityKit
 import SwiftUI
 
@@ -47,7 +48,7 @@ final class LiveActivityManager: ObservableObject {
     /// Start a Live Activity for recording
     func startRecordingActivity() async {
         guard ActivityAuthorizationInfo().areActivitiesEnabled else {
-            print("[LiveActivityManager] Live Activities not enabled")
+            Log.liveActivity.notice("Live Activities not enabled")
             return
         }
 
@@ -77,9 +78,9 @@ final class LiveActivityManager: ObservableObject {
             // Start update timer
             startUpdateTimer()
 
-            print("[LiveActivityManager] Live Activity started: \(activity.id)")
+            Log.liveActivity.notice("Live Activity started: \(activity.id, privacy: .public)")
         } catch {
-            print("[LiveActivityManager] Failed to start Live Activity: \(error)")
+            Log.liveActivity.error("Failed to start Live Activity: \(error, privacy: .public)")
         }
     }
 
@@ -132,7 +133,7 @@ final class LiveActivityManager: ObservableObject {
         isActivityActive = false
         startTime = nil
 
-        print("[LiveActivityManager] Live Activity ended")
+        Log.liveActivity.notice("Live Activity ended")
     }
 
     // MARK: - Timer

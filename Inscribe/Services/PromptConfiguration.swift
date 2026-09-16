@@ -1,4 +1,5 @@
 import Foundation
+import os
 import FoundationModels
 
 // MARK: - Sampling Mode
@@ -291,7 +292,7 @@ final class PromptConfiguration {
             object: NSUbiquitousKeyValueStore.default
         )
 
-        print("[PromptConfiguration] Initialized with \(prompts.count) prompts, iCloud: \(iCloudAvailable)")
+        Log.prompts.notice("Initialized with \(self.prompts.count, privacy: .public) prompts, iCloud: \(self.iCloudAvailable, privacy: .public)")
     }
 
     deinit {
@@ -357,7 +358,7 @@ final class PromptConfiguration {
         } else {
             savePrompts()
         }
-        print("[PromptConfiguration] Updated generation settings for: \(prompts[index].name)")
+        Log.prompts.notice("Updated generation settings for: \(self.prompts[index].name)")
     }
 
     /// Add a new custom prompt
@@ -375,7 +376,7 @@ final class PromptConfiguration {
         )
         prompts.append(newPrompt)
         savePrompts()
-        print("[PromptConfiguration] Added prompt: \(newPrompt.name)")
+        Log.prompts.notice("Added prompt: \(newPrompt.name)")
     }
 
     /// Create and add a new prompt
@@ -393,35 +394,35 @@ final class PromptConfiguration {
     /// Update an existing prompt (only custom prompts can be updated)
     func updatePrompt(_ prompt: Prompt) {
         guard let index = prompts.firstIndex(where: { $0.id == prompt.id }) else {
-            print("[PromptConfiguration] Prompt not found for update: \(prompt.id)")
+            Log.prompts.error("Prompt not found for update: \(prompt.id)")
             return
         }
 
         guard !prompts[index].isBuiltIn else {
-            print("[PromptConfiguration] Cannot update built-in prompt: \(prompt.name)")
+            Log.prompts.error("Cannot update built-in prompt: \(prompt.name)")
             return
         }
 
         prompts[index] = prompt
         savePrompts()
-        print("[PromptConfiguration] Updated prompt: \(prompt.name)")
+        Log.prompts.notice("Updated prompt: \(prompt.name)")
     }
 
     /// Delete a prompt (only custom prompts can be deleted)
     func deletePrompt(withId id: UUID) {
         guard let index = prompts.firstIndex(where: { $0.id == id }) else {
-            print("[PromptConfiguration] Prompt not found for deletion: \(id)")
+            Log.prompts.error("Prompt not found for deletion: \(id, privacy: .public)")
             return
         }
 
         guard !prompts[index].isBuiltIn else {
-            print("[PromptConfiguration] Cannot delete built-in prompt")
+            Log.prompts.error("Cannot delete built-in prompt")
             return
         }
 
         let removed = prompts.remove(at: index)
         savePrompts()
-        print("[PromptConfiguration] Deleted prompt: \(removed.name)")
+        Log.prompts.notice("Deleted prompt: \(removed.name)")
     }
 
     /// Reorder prompts
@@ -458,10 +459,10 @@ final class PromptConfiguration {
         let customData: Data?
         if iCloudAvailable, let iCloudData = NSUbiquitousKeyValueStore.default.data(forKey: iCloudKey) {
             customData = iCloudData
-            print("[PromptConfiguration] Loaded from iCloud")
+            Log.prompts.notice("Loaded from iCloud")
         } else if let localData = UserDefaults.standard.data(forKey: localKey) {
             customData = localData
-            print("[PromptConfiguration] Loaded from local storage")
+            Log.prompts.notice("Loaded from local storage")
         } else {
             customData = nil
         }
@@ -470,9 +471,9 @@ final class PromptConfiguration {
             do {
                 let customPrompts = try JSONDecoder().decode([Prompt].self, from: data)
                 loadedPrompts.append(contentsOf: customPrompts.filter { !$0.isBuiltIn })
-                print("[PromptConfiguration] Loaded \(customPrompts.count) custom prompts")
+                Log.prompts.notice("Loaded \(customPrompts.count, privacy: .public) custom prompts")
             } catch {
-                print("[PromptConfiguration] Error decoding prompts: \(error)")
+                Log.prompts.error("Error decoding prompts: \(error, privacy: .public)")
             }
         }
 
@@ -552,12 +553,12 @@ final class PromptConfiguration {
             if iCloudAvailable {
                 NSUbiquitousKeyValueStore.default.set(data, forKey: iCloudKey)
                 NSUbiquitousKeyValueStore.default.synchronize()
-                print("[PromptConfiguration] Saved to iCloud")
+                Log.prompts.notice("Saved to iCloud")
             }
 
-            print("[PromptConfiguration] Saved \(customPrompts.count) custom prompts")
+            Log.prompts.notice("Saved \(customPrompts.count, privacy: .public) custom prompts")
         } catch {
-            print("[PromptConfiguration] Error encoding prompts: \(error)")
+            Log.prompts.error("Error encoding prompts: \(error, privacy: .public)")
         }
     }
 
@@ -569,7 +570,7 @@ final class PromptConfiguration {
             return
         }
 
-        print("[PromptConfiguration] iCloud change detected, reason: \(changeReason)")
+        Log.prompts.notice("iCloud change detected, reason: \(changeReason, privacy: .public)")
 
         // Reload prompts on external changes
         if changeReason == NSUbiquitousKeyValueStoreServerChange ||
@@ -581,12 +582,12 @@ final class PromptConfiguration {
     /// Force sync with iCloud
     func syncWithiCloud() {
         guard iCloudAvailable else {
-            print("[PromptConfiguration] iCloud not available")
+            Log.prompts.notice("iCloud not available")
             return
         }
 
         NSUbiquitousKeyValueStore.default.synchronize()
         loadPrompts()
-        print("[PromptConfiguration] Synced with iCloud")
+        Log.prompts.notice("Synced with iCloud")
     }
 }

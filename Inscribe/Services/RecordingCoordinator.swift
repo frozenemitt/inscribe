@@ -1,4 +1,5 @@
 import Foundation
+import os
 import Observation
 import SwiftData
 
@@ -152,7 +153,7 @@ final class RecordingCoordinator {
         if let stopTask { _ = try? await stopTask.value }
 
         guard !isDelivering else {
-            print("[RecordingCoordinator] Still delivering the last dictation")
+            Log.dictation.notice("Still delivering the last dictation")
             AudioFeedbackService.shared.playIfEnabled(.error, settings: settings)
             return
         }
@@ -176,7 +177,7 @@ final class RecordingCoordinator {
         activeProfile = settings.profile(forBundleIdentifier: targetApp?.bundleIdentifier)
 
         if let activeProfile {
-            print("[RecordingCoordinator] Using profile for \(activeProfile.appName)")
+            Log.dictation.notice("Using profile for \(activeProfile.appName, privacy: .public)")
         }
 
         // Chromium-based apps need to be told to build an accessibility tree, and it
@@ -193,7 +194,7 @@ final class RecordingCoordinator {
         } catch {
             AudioFeedbackService.shared.playIfEnabled(.error, settings: settings)
             NotificationService.shared.showErrorIfEnabled(error.localizedDescription, settings: settings)
-            print("[RecordingCoordinator] Failed to start: \(error)")
+            Log.dictation.error("Failed to start: \(error, privacy: .public)")
             return
         }
 
@@ -207,7 +208,7 @@ final class RecordingCoordinator {
             startOverlayTicker()
         }
         #endif
-        print("[RecordingCoordinator] Recording started")
+        Log.dictation.notice("Recording started")
     }
 
     /// Stop, transcribe, optionally run the AI pass, then deliver the text.
@@ -247,7 +248,7 @@ final class RecordingCoordinator {
             #endif
             AudioFeedbackService.shared.playIfEnabled(.error, settings: settings)
             NotificationService.shared.showErrorIfEnabled(error.localizedDescription, settings: settings)
-            print("[RecordingCoordinator] Error stopping: \(error)")
+            Log.dictation.error("Error stopping: \(error, privacy: .public)")
             return
         }
 
@@ -273,14 +274,14 @@ final class RecordingCoordinator {
                     engineError.localizedDescription,
                     settings: settings
                 )
-                print("[RecordingCoordinator] Recognition failed: \(engineError)")
+                Log.dictation.error("Recognition failed: \(engineError, privacy: .public)")
             } else {
                 AudioFeedbackService.shared.playIfEnabled(.error, settings: settings)
                 NotificationService.shared.showErrorIfEnabled(
                     "Nothing was heard. Check the input device in Settings.",
                     settings: settings
                 )
-                print("[RecordingCoordinator] Empty transcript, nothing to deliver")
+                Log.dictation.notice("Empty transcript, nothing to deliver")
             }
             return
         }
@@ -323,7 +324,7 @@ final class RecordingCoordinator {
         } catch {
             // A failed AI pass must not cost the user their words.
             AudioFeedbackService.shared.stopProcessingLoop()
-            print("[RecordingCoordinator] AI failed, delivering raw transcript: \(error)")
+            Log.dictation.error("AI failed, delivering raw transcript: \(error, privacy: .public)")
 
             await deliver(transcript)
             recordHistory(text: transcript, rawText: nil)
@@ -380,7 +381,7 @@ final class RecordingCoordinator {
         skipAIOnce = false
         lastDestination = nil
         AudioFeedbackService.shared.playIfEnabled(.recordingStopped, settings: settings)
-        print("[RecordingCoordinator] Recording cancelled")
+        Log.dictation.notice("Recording cancelled")
     }
 
     // MARK: - Output
@@ -457,7 +458,7 @@ final class RecordingCoordinator {
         maxDurationTask = Task { [weak self] in
             try? await Task.sleep(for: .seconds(limit))
             guard !Task.isCancelled, let self, self.isRecording else { return }
-            print("[RecordingCoordinator] Hit the \(limit)s cap, stopping")
+            Log.dictation.notice("Hit the \(limit, privacy: .public)s cap, stopping")
             await self.stopAndProcess()
         }
     }

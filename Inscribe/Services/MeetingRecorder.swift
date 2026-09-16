@@ -1,4 +1,5 @@
 import Foundation
+import os
 import Observation
 import SwiftData
 
@@ -213,7 +214,7 @@ final class MeetingRecorder {
         } catch {
             diarizationActive = false
             lastError = "Speaker separation unavailable: \(error.localizedDescription)"
-            print("[MeetingRecorder] Diarizer unavailable: \(error)")
+            Log.meetings.error("Diarizer unavailable: \(error, privacy: .public)")
         }
 
         engine.collectTimedSegments = true
@@ -253,7 +254,7 @@ final class MeetingRecorder {
         startIndicator()
         #endif
         AudioFeedbackService.shared.playIfEnabled(.recordingStarted, settings: settings)
-        print("[MeetingRecorder] Meeting started, diarization: \(diarizationActive)")
+        Log.meetings.notice("Meeting started, diarization: \(self.diarizationActive, privacy: .public)")
     }
 
     /// The device this meeting records from.
@@ -282,7 +283,7 @@ final class MeetingRecorder {
         } catch {
             systemAudioActive = false
             lastError = error.localizedDescription
-            print("[MeetingRecorder] System audio unavailable, microphone only: \(error)")
+            Log.meetings.error("System audio unavailable, microphone only: \(error, privacy: .public)")
             return settings.inputDeviceUID
         }
     }
@@ -367,7 +368,7 @@ final class MeetingRecorder {
 
         state = .paused
         AudioFeedbackService.shared.playIfEnabled(.recordingStopped, settings: settings)
-        print("[MeetingRecorder] Paused at \(Int(completedAudioSeconds))s of audio")
+        Log.meetings.notice("Paused at \(Int(self.completedAudioSeconds), privacy: .public)s of audio")
     }
 
     /// Start capturing again, continuing the same meeting.
@@ -398,14 +399,14 @@ final class MeetingRecorder {
 
             lastError = error.localizedDescription
             AudioFeedbackService.shared.playIfEnabled(.error, settings: settings)
-            print("[MeetingRecorder] Could not resume: \(error)")
+            Log.meetings.error("Could not resume: \(error, privacy: .public)")
             return
         }
 
         sessionStartedAt = Date()
         state = .recording
         AudioFeedbackService.shared.playIfEnabled(.recordingStarted, settings: settings)
-        print("[MeetingRecorder] Resumed at offset \(Int(sessionOffset))s")
+        Log.meetings.notice("Resumed at offset \(Int(self.sessionOffset), privacy: .public)s")
     }
 
     /// Move this session's results onto the meeting clock.
@@ -504,9 +505,12 @@ final class MeetingRecorder {
         activeMeeting = nil
         AudioFeedbackService.shared.playIfEnabled(.processingComplete, settings: settings)
 
-        print("""
-            [MeetingRecorder] Saved "\(meeting.title)" — \
-            \(meeting.utterances.count) utterances, \(meeting.speakers.count) speakers
+        // The title is the user's own words, so it is left private and the system
+        // redacts it. The counts are what make the line worth keeping.
+        Log.meetings.notice("""
+            saved "\(meeting.title)" — \
+            \(meeting.utterances.count, privacy: .public) utterances, \
+            \(meeting.speakers.count, privacy: .public) speakers
             """)
     }
 
@@ -522,7 +526,7 @@ final class MeetingRecorder {
         // Without timings there is nothing to align against; the raw transcript on the
         // meeting is the whole result.
         guard !timedSegments.isEmpty else {
-            print("[MeetingRecorder] No timed segments — transcript kept without attribution")
+            Log.meetings.notice("No timed segments — transcript kept without attribution")
             return
         }
 

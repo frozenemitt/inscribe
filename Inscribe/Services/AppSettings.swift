@@ -1,4 +1,5 @@
 import Foundation
+import os
 import SwiftUI
 
 /// Lightweight app settings for the background transcription tool
@@ -286,7 +287,7 @@ final class AppSettings {
             self.selectedPromptId = nil
         }
 
-        print("[AppSettings] Loaded settings - AI: \(aiEnabled), Clipboard: \(copyToClipboardAutomatically)")
+        Log.settings.notice("Loaded settings - AI: \(self.aiEnabled, privacy: .public), Clipboard: \(self.copyToClipboardAutomatically, privacy: .public)")
     }
 
     // MARK: - Per-App Profiles
@@ -373,7 +374,7 @@ final class AppSettings {
         notifyOnError = true
         appProfilesData = nil
 
-        print("[AppSettings] Reset to defaults")
+        Log.settings.notice("Reset to defaults")
     }
 
     /// Check if AI processing should be used for current transcription
@@ -437,7 +438,7 @@ extension AppSettings {
     var hotkeyTrigger: HotkeyTrigger {
         guard !useGlobeKey else { return .globe }
         guard let (keyCode, flags) = parseHotkeyForEventTap() else {
-            print("[AppSettings] Could not parse '\(hotkeyString)', falling back to the Globe key")
+            Log.settings.error("Could not parse '\(self.hotkeyString, privacy: .public)', falling back to the Globe key")
             return .globe
         }
         return .combo(keyCode: keyCode, modifiers: flags)
