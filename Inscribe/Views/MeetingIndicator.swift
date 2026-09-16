@@ -17,7 +17,6 @@ import AppKit
 final class MeetingIndicatorController {
 
     private var panel: NSPanel?
-    private var glassView: NSGlassEffectView?
     private let model = MeetingIndicatorModel()
     private let settings: AppSettings
     private var moveObserver: (any NSObjectProtocol)?
@@ -50,9 +49,13 @@ final class MeetingIndicatorController {
         model.spectrum = []
     }
 
+    /// Alpha only, and only when it moved. The tint is set once when the panel is
+    /// built: reassigning it per frame makes the material recomposite every tick.
     private func applyTint() {
-        panel?.alphaValue = settings.overlayOpacity
-        glassView?.tintColor = NSColor.black.withAlphaComponent(0.22)
+        guard let panel else { return }
+        let wanted = settings.overlayOpacity
+        guard abs(panel.alphaValue - wanted) > 0.001 else { return }
+        panel.alphaValue = wanted
     }
 
     private func makePanel() -> NSPanel {
@@ -78,8 +81,8 @@ final class MeetingIndicatorController {
         glass.translatesAutoresizingMaskIntoConstraints = false
         glass.style = .clear
         glass.cornerRadius = Self.height / 2
+        glass.tintColor = NSColor.black.withAlphaComponent(0.22)
         glass.contentView = hosting
-        self.glassView = glass
 
         let container = MeetingDragHandleView()
         container.addSubview(glass)
