@@ -248,7 +248,8 @@ final class MeetingRecorder {
             try await engine.startRecording(
                 owner: .meeting,
                 contextualStrings: settings.vocabularyHints,
-                inputDeviceUID: meetingInputDeviceUID()
+                inputDeviceUID: meetingInputDeviceUID(),
+                publishesSpectrum: settings.showMeetingIndicator
             )
         } catch {
             lastError = error.localizedDescription

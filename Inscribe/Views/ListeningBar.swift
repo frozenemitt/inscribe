@@ -32,7 +32,10 @@ struct ListeningBar: View {
     private static let height: CGFloat = DictationOverlayController.bandHeight
 
     var body: some View {
-        TimelineView(.animation) { context in
+        // Thirty a second, not display refresh. The spectrum behind it only changes
+        // twenty-three times a second, so anything faster redraws the same picture —
+        // and on a meeting's panel that goes on for the length of the meeting.
+        TimelineView(.periodic(from: .now, by: 1.0 / 30.0)) { context in
             let time = context.date.timeIntervalSinceReferenceDate
             let amplitudes = (0..<Self.pointCount).map { amplitude(index: $0, time: time) }
             let shape = RibbonShape(amplitudes: amplitudes)
