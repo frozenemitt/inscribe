@@ -318,17 +318,22 @@ private struct ListeningBar: View {
             let shape = RibbonShape(amplitudes: amplitudes)
             let stops = isProcessing ? Self.processingStops : Self.voiceStops
 
-            ZStack {
-                shape.fill(
-                    LinearGradient(stops: stops, startPoint: .top, endPoint: .bottom)
-                )
+            let fill = LinearGradient(stops: stops, startPoint: .top, endPoint: .bottom)
 
-                // The same Liquid Glass the panel is made of, cut to the ribbon.
-                // `glassEffect` takes any shape, not just a rounded rectangle, so the
-                // ribbon gets the real thing — the specular edge and the refraction of
-                // what is behind it — rather than a colour pretending to be lit.
-                Color.clear.glassEffect(.regular, in: shape)
+            ZStack {
+                // Bloom, then the shape itself, both adding their light to whatever is
+                // behind rather than covering it. Additive blending is what makes this
+                // read as something lit: a blurred copy drawn normally is just a
+                // blurry shape, which is exactly how the last attempt looked.
+                shape.fill(fill)
+                    .blur(radius: 7)
+                    .opacity(0.85)
+                    .blendMode(.plusLighter)
+
+                shape.fill(fill)
+                    .blendMode(.plusLighter)
             }
+            .compositingGroup()
             .frame(height: Self.height)
         }
         .frame(height: Self.height)
@@ -400,13 +405,13 @@ private struct ListeningBar: View {
     /// so it is the same colour where it meets zero however thick it is. The ends fade
     /// rather than stopping, so the edges dissolve instead of being cut off.
     ///
-    /// Carried under the glass rather than in front of it, so it needs more colour
-    /// than a flat fill would: the glass mutes what is behind it and hands back the
-    /// shine. The system pink is still gone — it shouted at this size — but a
-    /// washed-out ramp under glass only reads as grey.
-    private static let azure = Color(red: 0.24, green: 0.52, blue: 0.96)
-    private static let indigo = Color(red: 0.42, green: 0.40, blue: 0.92)
-    private static let lavender = Color(red: 0.70, green: 0.46, blue: 0.94)
+    /// Bright rather than merely saturated, because these colours are added to the
+    /// glass behind them rather than painted over it. Additive light builds toward
+    /// white, so a mid-tone ramp comes out dim; the brilliance in Apple's own voice
+    /// graphics is emitted, not reflected.
+    private static let azure = Color(red: 0.36, green: 0.72, blue: 1.00)
+    private static let indigo = Color(red: 0.52, green: 0.46, blue: 1.00)
+    private static let lavender = Color(red: 0.74, green: 0.50, blue: 1.00)
 
     private static let voiceStops: [Gradient.Stop] = [
         .init(color: lavender.opacity(0.35), location: 0.0),
@@ -418,7 +423,7 @@ private struct ListeningBar: View {
         .init(color: lavender.opacity(0.35), location: 1.0)
     ]
 
-    private static let amber = Color(red: 0.85, green: 0.62, blue: 0.36)
+    private static let amber = Color(red: 1.00, green: 0.72, blue: 0.38)
 
     private static let processingStops: [Gradient.Stop] = [
         .init(color: amber.opacity(0.35), location: 0.0),
