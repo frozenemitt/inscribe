@@ -332,12 +332,12 @@ final class TranscriptionEngine {
     /// Fold a new reading into the level, fast to rise and slow to fall.
     ///
     /// A bar following raw loudness flickers, because speech is full of gaps between
-    /// syllables. Rising immediately and falling gently tracks the voice rather than
-    /// the waveform.
+    /// syllables. Rising almost immediately and falling over about a fifth of a second
+    /// tracks the voice rather than the waveform, while still keeping up with it.
     private func applyLevel(_ reading: Double) {
         inputLevel = reading > inputLevel
-            ? inputLevel + (reading - inputLevel) * 0.6
-            : inputLevel + (reading - inputLevel) * 0.22
+            ? inputLevel + (reading - inputLevel) * 0.75
+            : inputLevel + (reading - inputLevel) * 0.45
     }
 
     /// Loudness of one buffer, as 0 to 1 across the range a voice actually occupies.
