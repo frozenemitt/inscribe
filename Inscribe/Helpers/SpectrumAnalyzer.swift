@@ -58,8 +58,12 @@ final class SpectrumAnalyzer {
 
         prepareBins(sampleRate: buffer.format.sampleRate)
 
+        // The newest samples, not the oldest. Reading from the front of a buffer
+        // longer than the transform analyses audio that is already history, and shows
+        // it a buffer late.
+        let offset = Int(buffer.frameLength) - size
         var windowed = [Float](repeating: 0, count: size)
-        vDSP_vmul(channel, 1, window, 1, &windowed, 1, vDSP_Length(size))
+        vDSP_vmul(channel + offset, 1, window, 1, &windowed, 1, vDSP_Length(size))
 
         let half = size / 2
         var real = [Float](repeating: 0, count: half)
