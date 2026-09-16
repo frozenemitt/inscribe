@@ -17,6 +17,7 @@ import AppKit
 final class MeetingIndicatorController {
 
     private var panel: NSPanel?
+    private var glassView: NSGlassEffectView?
     private let model = MeetingIndicatorModel()
     private let settings: AppSettings
     private var moveObserver: (any NSObjectProtocol)?
@@ -49,13 +50,13 @@ final class MeetingIndicatorController {
         model.spectrum = []
     }
 
-    /// Alpha only, and only when it moved. The tint is set once when the panel is
-    /// built: reassigning it per frame makes the material recomposite every tick.
+    /// Thin the pane, not the clock. Same reasoning as the dictation panel: the
+    /// content is a sibling above the glass, so fading the glass leaves it alone.
     private func applyTint() {
-        guard let panel else { return }
+        guard let glassView else { return }
         let wanted = settings.overlayOpacity
-        guard abs(panel.alphaValue - wanted) > 0.001 else { return }
-        panel.alphaValue = wanted
+        guard abs(glassView.alphaValue - wanted) > 0.001 else { return }
+        glassView.alphaValue = wanted
     }
 
     private func makePanel() -> NSPanel {
@@ -82,15 +83,20 @@ final class MeetingIndicatorController {
         glass.style = .clear
         glass.cornerRadius = Self.height / 2
         glass.tintColor = NSColor.black.withAlphaComponent(0.22)
-        glass.contentView = hosting
+        self.glassView = glass
 
         let container = MeetingDragHandleView()
         container.addSubview(glass)
+        container.addSubview(hosting)
         NSLayoutConstraint.activate([
             glass.leadingAnchor.constraint(equalTo: container.leadingAnchor),
             glass.trailingAnchor.constraint(equalTo: container.trailingAnchor),
             glass.topAnchor.constraint(equalTo: container.topAnchor),
-            glass.bottomAnchor.constraint(equalTo: container.bottomAnchor)
+            glass.bottomAnchor.constraint(equalTo: container.bottomAnchor),
+            hosting.leadingAnchor.constraint(equalTo: container.leadingAnchor),
+            hosting.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+            hosting.topAnchor.constraint(equalTo: container.topAnchor),
+            hosting.bottomAnchor.constraint(equalTo: container.bottomAnchor)
         ])
         panel.contentView = container
 

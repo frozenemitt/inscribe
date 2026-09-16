@@ -16,6 +16,10 @@ import AppKit
 final class DictationOverlayController {
 
     private var panel: NSPanel?
+
+    /// The pane behind the content, faded on its own so the words stay readable.
+    private var glassView: NSGlassEffectView?
+
     private let model = OverlayModel()
     private let settings: AppSettings
     /// Held so the panel's move notifications keep arriving for the life of the app.
@@ -71,16 +75,25 @@ final class DictationOverlayController {
 
     /// Fade the whole panel, glass included.
     ///
-    /// Two things learned the hard way. Driving the glass tint instead of the alpha
-    /// only darkens the material, never thins it, so nothing showed through at any
-    /// setting. And the tint is set once when the panel is built, not here: assigning
-    /// it twenty times a second makes the material recomposite on every tick and the
-    /// panel turns muddy.
+    /// The pane thins; the words do not.
+    ///
+    /// Three ways to do this and only one of them works. Tint only darkens the
+    /// material, so nothing showed through at any setting. The window's alpha thins
+    /// everything including the text, which defeats the panel. Fading the glass view
+    /// alone is the answer, and it needs the content to be a sibling drawn on top of
+    /// the glass rather than living inside it — a view's alpha takes its subviews
+    /// with it.
+    ///
+    /// The tint itself is set once when the panel is built. Assigning it twenty times
+    /// a second makes the material recomposite on every tick and the panel goes
+    /// muddy.
     private func applyOpacity() {
-        guard let panel else { return }
+        guard let glassView else { return }
+
         let wanted = settings.overlayOpacity
-        guard abs(panel.alphaValue - wanted) > 0.001 else { return }
-        panel.alphaValue = wanted
+        guard abs(glassView.alphaValue - wanted) > 0.001 else { return }
+        glassView.alphaValue = wanted
+        model.paneOpacity = wanted
     }
 
     func showProcessing() {
@@ -196,15 +209,23 @@ final class DictationOverlayController {
         // Set once. Reassigning it per frame makes the material recomposite and the
         // panel darkens as it goes.
         glass.tintColor = NSColor.black.withAlphaComponent(0.22)
-        glass.contentView = hosting
+        self.glassView = glass
 
+        // The content sits on top of the glass rather than inside it. As the glass
+        // view's `contentView` it would inherit the glass's alpha, and thinning the
+        // pane would thin the dictation with it.
         let container = DragHandleView()
         container.addSubview(glass)
+        container.addSubview(hosting)
         NSLayoutConstraint.activate([
             glass.leadingAnchor.constraint(equalTo: container.leadingAnchor),
             glass.trailingAnchor.constraint(equalTo: container.trailingAnchor),
             glass.topAnchor.constraint(equalTo: container.topAnchor),
-            glass.bottomAnchor.constraint(equalTo: container.bottomAnchor)
+            glass.bottomAnchor.constraint(equalTo: container.bottomAnchor),
+            hosting.leadingAnchor.constraint(equalTo: container.leadingAnchor),
+            hosting.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+            hosting.topAnchor.constraint(equalTo: container.topAnchor),
+            hosting.bottomAnchor.constraint(equalTo: container.bottomAnchor)
         ])
         panel.contentView = container
 
@@ -270,6 +291,9 @@ final class OverlayModel {
     /// How tall the text has laid itself out, which is what sizes the panel.
     var textHeight: CGFloat = 0
 
+    /// How solid the pane behind is, so the rim drawn on top can match it.
+    var paneOpacity: Double = 0.75
+
     /// How tall the text may grow before older lines are pushed off the top. Set from
     /// the room left between the panel's bottom edge and the top of its screen.
     var maxTextHeight: CGFloat = DictationOverlayView.lineHeight * 5
@@ -334,6 +358,9 @@ private struct DictationOverlayView: View {
                     ),
                     lineWidth: 1
                 )
+                // The rim is the pane's edge, so it thins with the pane. Left solid it
+                // outlines a panel that is no longer there.
+                .opacity(model.paneOpacity)
         )
         // Rendered dark throughout, so the text comes out light and the glass picks
         // its dark treatment, rather than each part being told separately.
