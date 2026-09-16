@@ -17,6 +17,9 @@ final class DictationOverlayController {
 
     private var panel: NSPanel?
     private let model = OverlayModel()
+
+    /// The glass behind the content, kept so its tint can follow the setting.
+    private var glassView: NSGlassEffectView?
     private let settings: AppSettings
     /// Held so the panel's move notifications keep arriving for the life of the app.
     private var moveObserver: (any NSObjectProtocol)?
@@ -69,17 +72,16 @@ final class DictationOverlayController {
         growToFit()
     }
 
-    /// Fade the whole panel, glass included.
+    /// Darken or clear the glass, leaving the words alone.
     ///
-    /// The setting used to fade the SwiftUI content, which worked while the glass was
-    /// drawn inside it. The glass is an AppKit view behind that content now, so fading
-    /// the content only made the words dim over a pane that stayed solid. The window's
-    /// own alpha takes everything with it.
+    /// Fading the window took the text with it, so turning the panel down to see the
+    /// document underneath also made the dictation harder to read — the two things
+    /// you were trading between were the same thing. Tint changes only the pane: at
+    /// the low end the window behind shows through, and the text stays exactly as
+    /// legible as it was.
     private func applyOpacity() {
-        guard let panel else { return }
-        let wanted = settings.overlayOpacity
-        guard abs(panel.alphaValue - wanted) > 0.001 else { return }
-        panel.alphaValue = wanted
+        guard let glassView else { return }
+        glassView.tintColor = NSColor.black.withAlphaComponent(settings.overlayOpacity * 0.7)
     }
 
     func showProcessing() {
@@ -192,9 +194,8 @@ final class DictationOverlayController {
         // this gentle put almost none of the panel inside it. A larger radius gives
         // the effect somewhere to happen.
         glass.cornerRadius = 26
-        // A heavy tint darkens the rim along with everything else, and the rim is the
-        // part worth seeing.
-        glass.tintColor = NSColor.black.withAlphaComponent(0.22)
+        // The tint is the user's "How solid" setting; applyOpacity keeps it current.
+        self.glassView = glass
         glass.contentView = hosting
 
         let container = DragHandleView()
