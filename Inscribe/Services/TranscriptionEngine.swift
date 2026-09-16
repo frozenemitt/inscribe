@@ -269,7 +269,9 @@ final class TranscriptionEngine {
         }
 
         phase = .recording
-        Self.log.notice("recording started for \(owner.rawValue, privacy: .public)")
+        let setup = ContinuousClock.now - startedAt
+        let seconds = Double(setup.components.seconds) + Double(setup.components.attoseconds) / 1e18
+        Self.log.notice("recording started for \(owner.rawValue, privacy: .public), ready in \(seconds, format: .fixed(precision: 3), privacy: .public)s")
     }
 
     /// Stop recording and return the final transcript
