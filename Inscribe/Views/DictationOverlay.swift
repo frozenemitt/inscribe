@@ -293,7 +293,7 @@ private struct ListeningBar: View {
     let isProcessing: Bool
 
     private static let barCount = 48
-    private static let height: CGFloat = 18
+    private static let height: CGFloat = 22
 
     /// Seconds for the colour to travel the width once.
     private let period: TimeInterval = 2.4
@@ -332,7 +332,7 @@ private struct ListeningBar: View {
     /// quiet reads as visibly quiet rather than slightly quieter.
     private func barHeight(index: Int, time: TimeInterval) -> CGFloat {
         let ripple = sin(time * 3.2 + Double(index) * 0.45) * 0.18 + 0.82
-        let amplitude = isProcessing ? 0.55 : pow(level, 1.4)
+        let amplitude = isProcessing ? 0.55 : pow(level, 1.3)
         return 2 + Self.height * 0.9 * CGFloat(amplitude * ripple)
     }
 
