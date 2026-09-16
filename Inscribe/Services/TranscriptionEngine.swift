@@ -343,22 +343,22 @@ final class TranscriptionEngine {
         // A finalize that threw leaves no promise that the stream will end, so that one
         // case still cancels.
 
-        if finalized {
-            // Bounded, because this is the one place a stall costs everything after
-            // it. The stream is supposed to end when finalization does; when it did
-            // not, this method never returned, the engine stayed in `.stopping`, and
-            // every later hotkey press was refused by the busy guard without a word.
-            // A dictation that ends a little short beats an app that stops answering.
-            let task = recognitionTask
-            let drained = await Self.bounded(2) { _ = try? await task?.value }
-
-            if !drained {
-                Self.log.error("results did not drain in 2s — cancelling, the tail may be short")
-                recognitionTask?.cancel()
-            }
-        } else {
-            recognitionTask?.cancel()
-        }
+        // Give the results loop a moment of the main actor, then end it. Never wait on
+        // it to finish on its own.
+        //
+        // It is supposed to end when finalization does, and on a recording of a few
+        // tens of milliseconds it does not: awaiting it hung here for good, the engine
+        // stayed in `.stopping`, and the next press waited on a stop that never came —
+        // which is what a hotkey looks like when it dies. Two attempts at bounding that
+        // wait with a task group failed to fire at all, so the wait is gone rather than
+        // wrapped in something else that might not work either.
+        //
+        // Finalization has already returned by this point, so whatever it produced is
+        // queued and needs only a slice of the main actor to be taken up. That is the
+        // difference from the version that lost the ending: it cancelled before
+        // finalizing, not after.
+        try? await Task.sleep(for: .milliseconds(150))
+        recognitionTask?.cancel()
 
         Log.dictation.notice("STEP 6 results drained")
         recognitionTask = nil
