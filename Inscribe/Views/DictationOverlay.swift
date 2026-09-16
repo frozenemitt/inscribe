@@ -264,22 +264,20 @@ private struct DictationOverlayView: View {
         .padding(.vertical, 14)
         .frame(width: DictationOverlayController.width)
         .frame(minHeight: DictationOverlayController.minimumHeight)
-        .background {
-            ZStack {
-                Color.clear.glassEffect(.regular, in: RoundedRectangle(cornerRadius: 16))
-
-                // Dark whatever the system is set to, and whatever window it is
-                // floating over. Light emitted onto a pale surface has nothing to add
-                // to, so the ribbon simply disappeared in light mode. Siri's orb is
-                // dark glass for the same reason: the glow needs somewhere to burn.
-                RoundedRectangle(cornerRadius: 16)
-                    .fill(Color.black.opacity(0.55))
-            }
-            .overlay(
-                RoundedRectangle(cornerRadius: 16)
-                    .strokeBorder(Color.white.opacity(0.10), lineWidth: 1)
-            )
-        }
+        // Real glass, tinted dark from the inside rather than covered over.
+        //
+        // A black rectangle laid on top of the material hid the very thing that makes
+        // it glass: the lensing and the specular edge were still being drawn, and then
+        // painted out. `Glass` takes a tint, which darkens the material itself and
+        // leaves the refraction of the window behind intact.
+        .glassEffect(
+            .regular.tint(.black.opacity(0.5)),
+            in: RoundedRectangle(cornerRadius: 16)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 16)
+                .strokeBorder(Color.white.opacity(0.10), lineWidth: 1)
+        )
         // Rendered dark throughout, so the text comes out light and the glass picks
         // its dark treatment, rather than each part being told separately.
         .environment(\.colorScheme, .dark)
@@ -367,9 +365,10 @@ private struct ListeningBar: View {
         let step = size.width / CGFloat(amplitudes.count - 1)
 
         let top = amplitudes.enumerated().map { index, value in
-            CGPoint(
+            let thickness = resting + (reach - resting) * CGFloat(value)
+            return CGPoint(
                 x: CGFloat(index) * step,
-                y: middle - (resting + (reach - resting) * CGFloat(value))
+                y: middle - thickness * taper(index, of: amplitudes.count)
             )
         }
         let bottom = top.reversed().map { CGPoint(x: $0.x, y: middle + (middle - $0.y)) }
@@ -379,6 +378,18 @@ private struct ListeningBar: View {
         append(bottom, to: &path, starting: false)
         path.closeSubpath()
         return path
+    }
+
+    /// Pinch the first and last few points down to nothing.
+    ///
+    /// The ribbon used to begin and end at whatever its outermost band happened to be
+    /// doing, so both ends were a cut edge. A raised cosine over the outer eighth
+    /// brings it to a point instead, and the shape enters and leaves like a feather.
+    private static func taper(_ index: Int, of count: Int) -> CGFloat {
+        let width = Double(count) / 8
+        let distance = Double(min(index, count - 1 - index))
+        guard distance < width else { return 1 }
+        return CGFloat(0.5 - 0.5 * cos(.pi * distance / width))
     }
 
     /// Curve through the points rather than joining them, so the shape has no corners.
