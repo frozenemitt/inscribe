@@ -22,10 +22,12 @@ final class DictationOverlayController {
     private var moveObserver: (any NSObjectProtocol)?
 
     /// Measured to size the panel: the glass view around it reports nothing useful.
-    private var hostingView: NSHostingView<DictationOverlayView>?
 
     static let minimumHeight: CGFloat = 92
     static let width: CGFloat = 460
+    static let bandHeight: CGFloat = 22
+    static let contentSpacing: CGFloat = 10
+    static let verticalPadding: CGFloat = 28
 
     init(settings: AppSettings) {
         self.settings = settings
@@ -91,15 +93,21 @@ final class DictationOverlayController {
     /// The panel used to be 92 points tall whatever it held, so a dictation past a
     /// line and a half showed its last two lines and hid everything before them.
     private func growToFit() {
-        guard let panel, let content = panel.contentView else { return }
+        guard let panel else { return }
 
         let ceiling = availableTextHeight(for: panel)
         if abs(model.maxTextHeight - ceiling) > 0.5 {
             model.maxTextHeight = ceiling
         }
 
-        content.layoutSubtreeIfNeeded()
-        let height = max(content.fittingSize.height, Self.minimumHeight)
+        // The text measures itself and says how tall it is. Asking the view hierarchy
+        // stopped working once the glass view was in it: the glass pins its content to
+        // its own bounds, which come from the panel, so every view was being told its
+        // height by the one thing that wanted to be told. The panel stopped growing.
+        let height = max(
+            model.textHeight + Self.bandHeight + Self.contentSpacing + Self.verticalPadding,
+            Self.minimumHeight
+        )
         guard abs(panel.frame.height - height) > 0.5 else { return }
 
         // An NSWindow's origin is its bottom-left corner, so keeping it fixed while
@@ -156,17 +164,18 @@ final class DictationOverlayController {
         // because the panel is display-only: there is nothing in it to click.
         let hosting = NSHostingView(rootView: DictationOverlayView(model: model))
         hosting.translatesAutoresizingMaskIntoConstraints = false
-        self.hostingView = hosting
-
         // The glass the panel is made of. AppKit's own view rather than SwiftUI's
         // modifier: this one samples the windows behind the panel, which is where the
         // lensing comes from and what the SwiftUI version had no access to inside a
         // borderless transparent panel.
         let glass = NSGlassEffectView()
         glass.translatesAutoresizingMaskIntoConstraints = false
-        glass.style = .regular
+        // Clear rather than regular: the regular style is mostly frost, and frost is
+        // what hides the refraction. Clear blurs far less and lets the edge bend what
+        // is behind it, which is the part that reads as glass rather than as fog.
+        glass.style = .clear
         glass.cornerRadius = 16
-        glass.tintColor = NSColor.black.withAlphaComponent(0.45)
+        glass.tintColor = NSColor.black.withAlphaComponent(0.38)
         glass.contentView = hosting
 
         let container = DragHandleView()
@@ -240,6 +249,9 @@ final class OverlayModel {
     /// Loudness per frequency band, 0 to 1, low to high — one per bar.
     var spectrum: [Double] = []
 
+    /// How tall the text has laid itself out, which is what sizes the panel.
+    var textHeight: CGFloat = 0
+
     /// How tall the text may grow before older lines are pushed off the top. Set from
     /// the room left between the panel's bottom edge and the top of its screen.
     var maxTextHeight: CGFloat = DictationOverlayView.lineHeight * 5
@@ -258,7 +270,7 @@ private struct DictationOverlayView: View {
     }()
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
+        VStack(alignment: .leading, spacing: DictationOverlayController.contentSpacing) {
             ListeningBar(spectrum: model.spectrum, isProcessing: model.isProcessing)
 
             // Clipped to the newest lines rather than truncated.
@@ -275,9 +287,12 @@ private struct DictationOverlayView: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .frame(maxHeight: model.maxTextHeight, alignment: .bottom)
                 .clipped()
+                .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { height in
+                    model.textHeight = height
+                }
         }
         .padding(.horizontal, 18)
-        .padding(.vertical, 14)
+        .padding(.vertical, DictationOverlayController.verticalPadding / 2)
         .frame(width: DictationOverlayController.width)
         .frame(minHeight: DictationOverlayController.minimumHeight)
         // No background here. The glass is an NSGlassEffectView behind this view,
@@ -324,7 +339,7 @@ private struct ListeningBar: View {
     let isProcessing: Bool
 
     private static let pointCount = 48
-    private static let height: CGFloat = 22
+    private static let height: CGFloat = DictationOverlayController.bandHeight
 
     var body: some View {
         TimelineView(.animation) { context in
