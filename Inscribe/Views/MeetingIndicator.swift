@@ -74,7 +74,10 @@ final class MeetingIndicatorController {
 
         panel.isOpaque = false
         panel.backgroundColor = .clear
-        panel.hasShadow = true
+        // No shadow. On a light desktop a drop shadow around a dark panel reads as a
+        // dark border drawn round it — and it is invisible in dark mode, which is why
+        // the edge only ever looked wrong in one of the two.
+        panel.hasShadow = false
         panel.level = .floating
         panel.ignoresMouseEvents = false
         panel.isMovableByWindowBackground = true
