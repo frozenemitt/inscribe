@@ -29,6 +29,11 @@ final class MeetingIndicatorController {
     static let width: CGFloat = 232
     static let height: CGFloat = 64
 
+    /// Visible over full-screen apps and on every desktop: a meeting is usually a
+    /// full-screen call, and that is exactly when the indicator is wanted.
+    private static let collectionBehavior: NSWindow.CollectionBehavior =
+        [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
+
     init(settings: AppSettings) {
         self.settings = settings
     }
@@ -37,6 +42,11 @@ final class MeetingIndicatorController {
         if panel == nil {
             panel = makePanel()
         }
+        // Said again at the start of every meeting, not once when the panel was built.
+        // Same reasoning as the dictation panel: a panel that has lost this is drawn on
+        // one desktop and is invisible on every other, and only quitting the app builds
+        // a new one.
+        panel?.collectionBehavior = Self.collectionBehavior
         position(panel)
         applyTint()
         panel?.orderFrontRegardless()
@@ -81,7 +91,6 @@ final class MeetingIndicatorController {
         panel.level = .floating
         panel.ignoresMouseEvents = false
         panel.isMovableByWindowBackground = true
-        panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
 
         model.pauseOrResume = { [weak self] in self?.onPauseOrResume?() }
         model.stop = { [weak self] in self?.onStop?() }
