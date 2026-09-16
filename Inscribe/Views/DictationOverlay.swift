@@ -53,8 +53,8 @@ final class DictationOverlayController {
         panel?.orderFrontRegardless()
     }
 
-    func update(text: String, level: Double) {
-        model.level = level
+    func update(text: String, spectrum: [Double]) {
+        model.spectrum = spectrum
 
         // Only when it changed: the band wants twenty updates a second, and laying out
         // a panel-tall block of text that often to say the same words is waste.
@@ -221,8 +221,8 @@ final class OverlayModel {
     var isProcessing = false
     var opacity: Double = 0.75
 
-    /// Microphone loudness, 0 to 1, driving the band at the top.
-    var level: Double = 0
+    /// Loudness per frequency band, 0 to 1, low to high — one per bar.
+    var spectrum: [Double] = []
 
     /// How tall the text may grow before older lines are pushed off the top. Set from
     /// the room left between the panel's bottom edge and the top of its screen.
@@ -243,7 +243,7 @@ private struct DictationOverlayView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            ListeningBar(level: model.level, isProcessing: model.isProcessing)
+            ListeningBar(spectrum: model.spectrum, isProcessing: model.isProcessing)
 
             // Clipped to the newest lines rather than truncated.
             //
@@ -283,17 +283,17 @@ private struct DictationOverlayView: View {
     }
 }
 
-/// A band of moving colour across the top of the panel that rises with your voice.
+/// A band of moving colour across the top of the panel showing your voice's spectrum.
 ///
 /// It replaced an icon beside the text, which took a quarter of the width and made
 /// every line wrap sooner — so the panel grew taller to say the same thing. This sits
 /// above the words and leaves them the full width.
 ///
-/// The bars are driven by the microphone's own loudness rather than a timer, so a
-/// silent room is a flat line. That is the question the panel exists to answer: is it
-/// hearing me.
+/// Each bar is one slice of the frequency range, read off the microphone, so the band
+/// shows the shape of the voice rather than only its volume — and a silent room is a
+/// flat line. That is the question the panel exists to answer: is it hearing me.
 private struct ListeningBar: View {
-    let level: Double
+    let spectrum: [Double]
     let isProcessing: Bool
 
     private static let barCount = 48
@@ -334,18 +334,28 @@ private struct ListeningBar: View {
     /// swamped the voice underneath it: the band looked equally busy however softly
     /// you spoke. It is a gentler shape now, and the loudness is raised to a power so
     /// quiet reads as visibly quiet rather than slightly quieter.
+    /// One bar per frequency band, straight from the microphone.
+    ///
+    /// Nothing here invents movement any more. Every bar is the loudness of its own
+    /// slice of the spectrum, so vowels fill the left of the band, an "s" lights the
+    /// right, and a silent room is a flat line. Only the AI pass, which has no audio
+    /// to show, still falls back to a moving shape.
     private func barHeight(index: Int, time: TimeInterval) -> CGFloat {
-        let ripple = sin(time * 3.2 + Double(index) * 0.45) * 0.18 + 0.82
-        let amplitude = isProcessing ? 0.55 : Self.curve(level)
-        return 2 + Self.height * 0.9 * CGFloat(amplitude * ripple)
+        let amplitude: Double
+        if isProcessing {
+            amplitude = 0.55 * (sin(time * 3.2 + Double(index) * 0.45) * 0.18 + 0.82)
+        } else {
+            amplitude = index < spectrum.count ? Self.curve(spectrum[index]) : 0
+        }
+        return 2 + Self.height * 0.9 * CGFloat(amplitude)
     }
 
     /// Spread the quiet end of the range and compress the loud one.
     ///
-    /// Loudness is already measured in decibels, so the band was linear in something
-    /// logarithmic. Bending it again gives the quiet-to-middle stretch most of the
-    /// height, which is where speech spends its time and where the movement is worth
-    /// watching; the top compresses, so a raised voice fills the band without the
+    /// Loudness is already measured in decibels, so the band would be linear in
+    /// something logarithmic. Bending it again gives the quiet-to-middle stretch most
+    /// of the height, which is where speech spends its time and where the movement is
+    /// worth watching; the top compresses, so a strong band fills the bar without the
     /// difference between loud and louder eating the whole scale.
     private static func curve(_ level: Double) -> Double {
         log10(1 + 9 * min(max(level, 0), 1))

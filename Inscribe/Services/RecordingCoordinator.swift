@@ -431,7 +431,7 @@ final class RecordingCoordinator {
                 guard let self, self.isRecording else { return }
                 self.overlay.update(
                     text: self.engine.currentTranscript + self.engine.volatileText,
-                    level: self.engine.inputLevel
+                    spectrum: self.engine.spectrum
                 )
                 try? await Task.sleep(for: .milliseconds(50))
             }
