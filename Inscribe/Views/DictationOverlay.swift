@@ -383,25 +383,35 @@ private struct ListeningBar: View {
         return index < spectrum.count ? Self.curve(spectrum[index]) : 0
     }
 
-    /// Blue through the middle, out through purple to pink at the extremes.
+    /// Muted azure through the middle, out through indigo to a dusty lavender.
     ///
     /// Symmetric, because the ribbon swells from the centre line in both directions,
-    /// so it is the same colour where it meets zero however thick it is. The ends
-    /// fade rather than stopping, so the edges dissolve instead of being cut off.
+    /// so it is the same colour where it meets zero however thick it is. The ends fade
+    /// rather than stopping, so the edges dissolve instead of being cut off.
+    ///
+    /// Deliberately undersaturated. The system pink and purple are tuned to carry
+    /// meaning at the size of a button; spread across a moving shape they shout, and
+    /// the shouting is what read as unfinished rather than the shape itself.
+    private static let azure = Color(red: 0.36, green: 0.55, blue: 0.86)
+    private static let indigo = Color(red: 0.51, green: 0.47, blue: 0.80)
+    private static let lavender = Color(red: 0.70, green: 0.56, blue: 0.80)
+
     private static let voiceStops: [Gradient.Stop] = [
-        .init(color: .pink.opacity(0.5), location: 0.0),
-        .init(color: .pink.opacity(0.9), location: 0.14),
-        .init(color: .purple, location: 0.32),
-        .init(color: .blue, location: 0.5),
-        .init(color: .purple, location: 0.68),
-        .init(color: .pink.opacity(0.9), location: 0.86),
-        .init(color: .pink.opacity(0.5), location: 1.0)
+        .init(color: lavender.opacity(0.35), location: 0.0),
+        .init(color: lavender.opacity(0.75), location: 0.14),
+        .init(color: indigo, location: 0.34),
+        .init(color: azure, location: 0.5),
+        .init(color: indigo, location: 0.66),
+        .init(color: lavender.opacity(0.75), location: 0.86),
+        .init(color: lavender.opacity(0.35), location: 1.0)
     ]
 
+    private static let amber = Color(red: 0.85, green: 0.62, blue: 0.36)
+
     private static let processingStops: [Gradient.Stop] = [
-        .init(color: .orange.opacity(0.5), location: 0.0),
-        .init(color: .orange, location: 0.5),
-        .init(color: .orange.opacity(0.5), location: 1.0)
+        .init(color: amber.opacity(0.35), location: 0.0),
+        .init(color: amber, location: 0.5),
+        .init(color: amber.opacity(0.35), location: 1.0)
     ]
 
     /// Spread the quiet end of the range and compress the loud one.
