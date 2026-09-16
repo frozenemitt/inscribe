@@ -62,9 +62,12 @@ final class AudioCaptureHelper: @unchecked Sendable {
 
         // Install tap
         var tapCount = 0
+        // 2048 frames is about 43 milliseconds. The old 4096 meant the level band
+        // could only change twenty-three times a second, which reads as lag however
+        // smoothly it is drawn.
         inputNode.installTap(
             onBus: 0,
-            bufferSize: 4096,
+            bufferSize: 2048,
             format: format
         ) { [weak self] buffer, time in
             tapCount += 1

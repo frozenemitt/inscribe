@@ -361,8 +361,8 @@ final class TranscriptionEngine {
             let current = spectrum[index]
             let next = reading[index]
             spectrum[index] = next > current
-                ? current + (next - current) * 0.7
-                : current + (next - current) * 0.35
+                ? current + (next - current) * 0.85
+                : current + (next - current) * 0.5
         }
     }
 
