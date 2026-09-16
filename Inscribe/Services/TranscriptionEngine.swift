@@ -297,7 +297,11 @@ final class TranscriptionEngine {
         // Awaited rather than cancelled. An AsyncStream iterator throws away whatever
         // is still buffered when it is cancelled, and what is still buffered is
         // always the end of the sentence the user just spoke.
-        await audioProcessingTask?.value
+        let audioTask = audioProcessingTask
+        if await !Self.bounded(2, { _ = await audioTask?.value }) {
+            Self.log.error("audio did not drain in 2s — cancelling")
+            audioProcessingTask?.cancel()
+        }
         audioProcessingTask = nil
 
         // Finalize transcription
@@ -305,12 +309,21 @@ final class TranscriptionEngine {
         analyzerInputContinuation?.finish()
 
         var finalized = true
-        do {
-            try await speechAnalyzer?.finalizeAndFinishThroughEndOfInput()
-        } catch {
+        let analyzer = speechAnalyzer
+        let finishedInTime = await Self.bounded(3) {
+            do {
+                try await analyzer?.finalizeAndFinishThroughEndOfInput()
+            } catch {
+                Self.log.error("finalize failed: \(error, privacy: .public)")
+            }
+        }
+
+        if !finishedInTime {
+            // Seen on recordings of a few tens of milliseconds: finalization simply
+            // never returns. Waiting forever costs the whole engine.
             finalized = false
-            Self.log.error("finalize failed: \(error, privacy: .public)")
-            self.error = .transcriptionFailed(error.localizedDescription)
+            Self.log.error("finalize did not return in 3s — giving up on the tail")
+            self.error = .transcriptionFailed("The recogniser did not finish.")
         }
         // Drained rather than cancelled, for the same reason the audio stream above is.
         //
@@ -332,19 +345,7 @@ final class TranscriptionEngine {
             // every later hotkey press was refused by the busy guard without a word.
             // A dictation that ends a little short beats an app that stops answering.
             let task = recognitionTask
-            let drained = await withTaskGroup(of: Bool.self) { group in
-                group.addTask {
-                    _ = try? await task?.value
-                    return true
-                }
-                group.addTask {
-                    try? await Task.sleep(for: .seconds(2))
-                    return false
-                }
-                let first = await group.next() ?? false
-                group.cancelAll()
-                return first
-            }
+            let drained = await Self.bounded(2) { _ = try? await task?.value }
 
             if !drained {
                 Self.log.error("results did not drain in 2s — cancelling, the tail may be short")
@@ -391,6 +392,31 @@ final class TranscriptionEngine {
             spectrum[index] = next > current
                 ? current + (next - current) * 0.85
                 : current + (next - current) * 0.5
+        }
+    }
+
+    /// Run `work`, giving up after `seconds`. False when it ran out of time.
+    ///
+    /// Every await in the stop path needs one. A dictation that ends short is a bad
+    /// outcome; an engine stuck in `.stopping` refuses every recording after it,
+    /// without a sound, until the app is relaunched — which is what a hung await here
+    /// looks like from the outside: a hotkey that has died.
+    private nonisolated static func bounded(
+        _ seconds: Double,
+        _ work: @escaping @Sendable () async -> Void
+    ) async -> Bool {
+        await withTaskGroup(of: Bool.self) { group in
+            group.addTask {
+                await work()
+                return true
+            }
+            group.addTask {
+                try? await Task.sleep(for: .seconds(seconds))
+                return false
+            }
+            let first = await group.next() ?? false
+            group.cancelAll()
+            return first
         }
     }
 
