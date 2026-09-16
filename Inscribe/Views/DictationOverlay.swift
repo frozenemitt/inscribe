@@ -398,36 +398,39 @@ private struct ListeningBar: View {
         return index < spectrum.count ? Self.curve(spectrum[index]) : 0
     }
 
-    /// Muted azure through the middle, out through indigo to a dusty lavender.
+    /// White at the centre line, taking on colour as the ribbon swells away from it.
     ///
-    /// Symmetric, because the ribbon swells from the centre line in both directions,
-    /// so it is the same colour where it meets zero however thick it is. The ends fade
-    /// rather than stopping, so the edges dissolve instead of being cut off.
+    /// This is the way round Siri does it, and it was backwards here: colour sat in
+    /// the middle and the edges faded, so a quiet moment was a dim coloured thread
+    /// instead of a bright white one. Now silence is a clean white line and colour
+    /// only appears where the voice pushes the shape outward — the loudness writes
+    /// itself in hue as well as in height.
     ///
-    /// Deep and saturated, because the ribbon itself is painted rather than added:
-    /// these are the colours you actually see. The halo around it is what carries the
-    /// light, and the two together are what gives the brilliance in Apple's own voice
-    /// graphics — emitted, not reflected.
-    private static let azure = Color(red: 0.16, green: 0.55, blue: 1.00)
-    private static let indigo = Color(red: 0.40, green: 0.36, blue: 1.00)
-    private static let lavender = Color(red: 0.66, green: 0.40, blue: 1.00)
+    /// Symmetric, because the ribbon swells both ways from the centre. The ends fade
+    /// so the edges dissolve rather than being cut off.
+    private static let azure = Color(red: 0.24, green: 0.60, blue: 1.00)
+    private static let violet = Color(red: 0.62, green: 0.38, blue: 1.00)
 
     private static let voiceStops: [Gradient.Stop] = [
-        .init(color: lavender.opacity(0.35), location: 0.0),
-        .init(color: lavender.opacity(0.75), location: 0.14),
-        .init(color: indigo, location: 0.34),
-        .init(color: azure, location: 0.5),
-        .init(color: indigo, location: 0.66),
-        .init(color: lavender.opacity(0.75), location: 0.86),
-        .init(color: lavender.opacity(0.35), location: 1.0)
+        .init(color: violet.opacity(0.4), location: 0.0),
+        .init(color: violet, location: 0.16),
+        .init(color: azure, location: 0.36),
+        .init(color: .white, location: 0.47),
+        .init(color: .white, location: 0.53),
+        .init(color: azure, location: 0.64),
+        .init(color: violet, location: 0.84),
+        .init(color: violet.opacity(0.4), location: 1.0)
     ]
 
-    private static let amber = Color(red: 1.00, green: 0.72, blue: 0.38)
+    private static let amber = Color(red: 1.00, green: 0.70, blue: 0.32)
 
     private static let processingStops: [Gradient.Stop] = [
-        .init(color: amber.opacity(0.35), location: 0.0),
-        .init(color: amber, location: 0.5),
-        .init(color: amber.opacity(0.35), location: 1.0)
+        .init(color: amber.opacity(0.4), location: 0.0),
+        .init(color: amber, location: 0.22),
+        .init(color: .white, location: 0.47),
+        .init(color: .white, location: 0.53),
+        .init(color: amber, location: 0.78),
+        .init(color: amber.opacity(0.4), location: 1.0)
     ]
 
     /// Spread the quiet end of the range and compress the loud one.
