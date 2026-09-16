@@ -33,6 +33,11 @@ final class DictationOverlayController {
     static let contentSpacing: CGFloat = 10
     static let verticalPadding: CGFloat = 28
 
+    /// Visible over full-screen apps and on every desktop: a call is usually
+    /// full-screen, and that is exactly when the overlay is wanted.
+    private static let collectionBehavior: NSWindow.CollectionBehavior =
+        [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
+
     init(settings: AppSettings) {
         self.settings = settings
     }
@@ -54,6 +59,16 @@ final class DictationOverlayController {
             frame.size.height = Self.minimumHeight
             panel.setFrame(frame, display: false)
         }
+
+        // Said again on every dictation, not once when the panel was built.
+        //
+        // A panel found in the wild had lost it: the window server listed it on one
+        // desktop where a panel carrying the flag is listed on all of them. It was
+        // being drawn on that one desktop and was invisible on every other, and the
+        // only way back was to quit the app, because a relaunch builds a new panel.
+        // What takes the flag away is not known. Saying it again each time costs one
+        // assignment and removes the whole failure, whatever caused it.
+        panel?.collectionBehavior = Self.collectionBehavior
 
         position(panel)
         applyOpacity()
@@ -194,10 +209,6 @@ final class DictationOverlayController {
         // target, it never takes focus, and the alternative is a panel you cannot move.
         panel.ignoresMouseEvents = false
         panel.isMovableByWindowBackground = true
-
-        // Visible over full-screen apps and on every desktop: a call is usually
-        // full-screen, and that is exactly when the overlay is wanted.
-        panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
 
         // The SwiftUI content swallows the mouse, so `isMovableByWindowBackground`
         // never sees a click and the panel could not be dragged at all. This view sits
