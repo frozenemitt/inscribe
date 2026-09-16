@@ -312,14 +312,27 @@ struct ScribeApp: App {
     /// It also covers access granted minutes later, without a relaunch.
     private func armWhenTrustArrives() {
         Task { @MainActor in
-            while !hotkeyMonitor.isRunning {
+            // Waiting for access has no deadline: it can be granted minutes later, and
+            // asking costs nothing. Building the tap is different — a tap that refuses
+            // to build while trusted is a real fault, and retrying it forever only
+            // tears one down and rebuilds it every two seconds for the life of the app.
+            // Three attempts, then say so and stop.
+            while !AccessibilityPermission.isTrusted {
                 try? await Task.sleep(for: .seconds(2))
-                guard AccessibilityPermission.isTrusted else { continue }
+                guard !hotkeyMonitor.isRunning else { return }
+            }
+
+            for attempt in 1...3 {
+                guard !hotkeyMonitor.isRunning else { return }
                 if hotkeyMonitor.start() {
                     Log.app.notice("Accessibility arrived, hotkey now listening")
                     return
                 }
+                Log.app.error("Accessibility granted but the tap would not build, attempt \(attempt, privacy: .public) of 3")
+                try? await Task.sleep(for: .seconds(2))
             }
+
+            Log.app.error("Giving up on the hotkey. Open Settings to try again.")
         }
     }
     #endif
