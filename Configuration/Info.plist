@@ -2,9 +2,6 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-	<!-- Xcode's INFOPLIST_KEY_ build settings only cover an allowlist of keys, and
-	     NSAudioCaptureUsageDescription is not on it. Keys that cannot be expressed
-	     that way live here; GENERATE_INFOPLIST_FILE merges the rest in at build time. -->
 	<key>NSAudioCaptureUsageDescription</key>
 	<string>Inscribe records system audio during meetings so remote participants are transcribed, not just your microphone.</string>
 </dict>
