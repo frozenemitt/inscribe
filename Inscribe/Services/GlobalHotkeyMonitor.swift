@@ -159,6 +159,9 @@ final class GlobalHotkeyMonitor {
     /// When the last toggle was acted on, so chatter cannot fire a second one.
     private var lastToggle: ContinuousClock.Instant?
 
+    /// How many chattered releases have been ignored since the app started.
+    private var chatterSuppressed = 0
+
     /// How long a release has to stand before it counts.
     ///
     /// The Globe key chatters while held: the system sends a release and another press
@@ -401,6 +404,11 @@ final class GlobalHotkeyMonitor {
             if let pendingRelease {
                 pendingRelease.cancel()
                 self.pendingRelease = nil
+                chatterSuppressed += 1
+                // Rare by nature, and the only way to know whether the key is still
+                // doing this. A run of these while you hold the key is the fault; none
+                // of them means it has stopped.
+                Self.log.notice("ignored a release that was chatter (\(self.chatterSuppressed, privacy: .public) this run)")
                 return
             }
             onActivate?()
