@@ -55,6 +55,12 @@ final class TranscriptionEngine {
     /// a second time.
     private(set) var inputLevel: Double = 0
 
+    /// Loudness per frequency band, 0 to 1, low to high.
+    ///
+    /// One value per bar of the dictation overlay's band, read off the same buffers as
+    /// `inputLevel`. Empty until a recording starts.
+    private(set) var spectrum: [Double] = []
+
     private(set) var currentTranscript = ""
     private(set) var volatileText = ""  // Live, unconfirmed text
     private(set) var error: TranscriptionEngineError?
@@ -186,6 +192,7 @@ final class TranscriptionEngine {
         volatileText = ""
         timedSegments = []
         inputLevel = 0
+        spectrum = []
 
         // Check authorization
         guard await checkAuthorization() else {
@@ -229,6 +236,7 @@ final class TranscriptionEngine {
 
         audioProcessingTask = Task.detached(priority: .userInitiated) { [weak self] in
             let converter = BufferConverter()
+            let spectrumAnalyzer = SpectrumAnalyzer(bandCount: TranscriptionEngine.spectrumBandCount)
             var bufferCount = 0
 
             for await audioData in audioStream {
@@ -239,7 +247,11 @@ final class TranscriptionEngine {
                 tap?(audioData.buffer)
 
                 let level = Self.level(of: audioData.buffer)
-                await MainActor.run { self?.applyLevel(level) }
+                let bands = spectrumAnalyzer?.bands(from: audioData.buffer)
+                await MainActor.run {
+                    self?.applyLevel(level)
+                    if let bands { self?.applySpectrum(bands) }
+                }
 
                 do {
                     let converted = try converter.convertBuffer(audioData.buffer, to: targetFormat)
@@ -325,8 +337,33 @@ final class TranscriptionEngine {
         release()
 
         inputLevel = 0
+        spectrum = []
         Self.log.notice("recording stopped, delivering \(self.currentTranscript.count, privacy: .public) chars")
         return currentTranscript
+    }
+
+    /// How many bars the overlay's band has.
+    nonisolated static let spectrumBandCount = 48
+
+    /// Fold new band readings in, fast to rise and slower to fall.
+    ///
+    /// Same reason as the level: without it each bar chases the noise between
+    /// syllables and the band looks like static rather than a voice.
+    private func applySpectrum(_ reading: [Double]) {
+        guard reading.count == Self.spectrumBandCount else { return }
+
+        if spectrum.count != reading.count {
+            spectrum = reading
+            return
+        }
+
+        for index in reading.indices {
+            let current = spectrum[index]
+            let next = reading[index]
+            spectrum[index] = next > current
+                ? current + (next - current) * 0.7
+                : current + (next - current) * 0.35
+        }
     }
 
     /// Fold a new reading into the level, fast to rise and slow to fall.
@@ -388,6 +425,7 @@ final class TranscriptionEngine {
         currentTranscript = ""
         volatileText = ""
         inputLevel = 0
+        spectrum = []
     }
 
     // MARK: - Authorization
