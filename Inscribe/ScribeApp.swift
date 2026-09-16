@@ -232,6 +232,9 @@ struct ScribeApp: App {
 
         Task {
             _ = await transcriptionEngine.requestAuthorization()
+            // Resolve the locale and find the model now, so the first key press does
+            // not pay for it while the user waits to speak.
+            await transcriptionEngine.prepare()
         }
 
         Log.app.notice("macOS setup complete")
