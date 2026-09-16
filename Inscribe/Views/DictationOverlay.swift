@@ -321,17 +321,16 @@ private struct ListeningBar: View {
             let fill = LinearGradient(stops: stops, startPoint: .top, endPoint: .bottom)
 
             ZStack {
-                // Bloom, then the shape itself, both adding their light to whatever is
-                // behind rather than covering it. Additive blending is what makes this
-                // read as something lit: a blurred copy drawn normally is just a
-                // blurry shape, which is exactly how the last attempt looked.
+                // The halo adds its light to what is behind; the shape itself is
+                // painted normally. Adding both washed the colour out — additive
+                // channels climb toward white, so the ribbon turned pale exactly where
+                // it was brightest. The glow belongs around the shape, not in it.
                 shape.fill(fill)
-                    .blur(radius: 7)
-                    .opacity(0.85)
+                    .blur(radius: 8)
+                    .opacity(0.8)
                     .blendMode(.plusLighter)
 
                 shape.fill(fill)
-                    .blendMode(.plusLighter)
             }
             .compositingGroup()
             .frame(height: Self.height)
@@ -405,13 +404,13 @@ private struct ListeningBar: View {
     /// so it is the same colour where it meets zero however thick it is. The ends fade
     /// rather than stopping, so the edges dissolve instead of being cut off.
     ///
-    /// Bright rather than merely saturated, because these colours are added to the
-    /// glass behind them rather than painted over it. Additive light builds toward
-    /// white, so a mid-tone ramp comes out dim; the brilliance in Apple's own voice
-    /// graphics is emitted, not reflected.
-    private static let azure = Color(red: 0.36, green: 0.72, blue: 1.00)
-    private static let indigo = Color(red: 0.52, green: 0.46, blue: 1.00)
-    private static let lavender = Color(red: 0.74, green: 0.50, blue: 1.00)
+    /// Deep and saturated, because the ribbon itself is painted rather than added:
+    /// these are the colours you actually see. The halo around it is what carries the
+    /// light, and the two together are what gives the brilliance in Apple's own voice
+    /// graphics — emitted, not reflected.
+    private static let azure = Color(red: 0.16, green: 0.55, blue: 1.00)
+    private static let indigo = Color(red: 0.40, green: 0.36, blue: 1.00)
+    private static let lavender = Color(red: 0.66, green: 0.40, blue: 1.00)
 
     private static let voiceStops: [Gradient.Stop] = [
         .init(color: lavender.opacity(0.35), location: 0.0),
