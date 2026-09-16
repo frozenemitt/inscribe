@@ -139,6 +139,23 @@ final class AppSettings {
         didSet { save("hotkeyActivationModeRaw", hotkeyActivationModeRaw) }
     }
 
+    /// How solid the dictation panel's glass is. Below about a third the words start
+    /// competing with whatever is behind them.
+    var overlayOpacity: Double {
+        didSet { save("overlayOpacity", overlayOpacity) }
+    }
+
+    /// Where the user dragged the dictation panel, if they ever did.
+    ///
+    /// Absent means the default: bottom centre of whichever screen holds the pointer.
+    var overlayOriginX: Double? {
+        didSet { save("overlayOriginX", overlayOriginX) }
+    }
+
+    var overlayOriginY: Double? {
+        didSet { save("overlayOriginY", overlayOriginY) }
+    }
+
     /// Use the Globe / Fn key on its own instead of the key combination below.
     var useGlobeKey: Bool {
         didSet { save("useGlobeKey", useGlobeKey) }
@@ -230,6 +247,9 @@ final class AppSettings {
         self.autoSubmitAfterInsert = UserDefaults.standard.object(forKey: "autoSubmitAfterInsert") as? Bool ?? false
         self.useSurroundingContext = UserDefaults.standard.object(forKey: "useSurroundingContext") as? Bool ?? false
         self.showDictationOverlay = UserDefaults.standard.object(forKey: "showDictationOverlay") as? Bool ?? true
+        self.overlayOpacity = UserDefaults.standard.object(forKey: "overlayOpacity") as? Double ?? 0.75
+        self.overlayOriginX = UserDefaults.standard.object(forKey: "overlayOriginX") as? Double
+        self.overlayOriginY = UserDefaults.standard.object(forKey: "overlayOriginY") as? Double
         self.useShiftReturnAfterInsert = UserDefaults.standard.object(forKey: "useShiftReturnAfterInsert") as? Bool ?? false
         self.maxRecordingSeconds = UserDefaults.standard.object(forKey: "maxRecordingSeconds") as? Int ?? 600
         self.wordReplacements = UserDefaults.standard.dictionary(forKey: "wordReplacements") as? [String: String] ?? [:]
@@ -318,6 +338,9 @@ final class AppSettings {
         autoSubmitAfterInsert = false
         useSurroundingContext = false
         showDictationOverlay = true
+        overlayOpacity = 0.75
+        overlayOriginX = nil
+        overlayOriginY = nil
         useShiftReturnAfterInsert = false
         maxRecordingSeconds = 600
         wordReplacements = [:]

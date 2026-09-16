@@ -32,7 +32,7 @@ final class RecordingCoordinator {
     var modelContext: ModelContext?
 
     #if os(macOS)
-    private let overlay = DictationOverlayController()
+    private let overlay: DictationOverlayController
 
     /// Polls the engine while recording so the overlay tracks the live text.
     ///
@@ -91,7 +91,17 @@ final class RecordingCoordinator {
         self.engine = engine
         self.aiProcessor = aiProcessor
         self.settings = settings
+        #if os(macOS)
+        self.overlay = DictationOverlayController(settings: settings)
+        #endif
     }
+
+    #if os(macOS)
+    /// Put the overlay back at the bottom of the screen, for the settings screen.
+    func resetOverlayPosition() {
+        overlay.resetPosition()
+    }
+    #endif
 
     // MARK: - Resolved Settings
 
