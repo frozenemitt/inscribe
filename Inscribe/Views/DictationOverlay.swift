@@ -305,6 +305,8 @@ private struct RibbonShape: Shape {
 /// The colours are the system's own blue, purple and pink, so they follow light and
 /// dark mode without being told to.
 private struct ListeningBar: View {
+    @Environment(\.colorScheme) private var colorScheme
+
     let spectrum: [Double]
     let isProcessing: Bool
 
@@ -321,18 +323,32 @@ private struct ListeningBar: View {
             let fill = LinearGradient(stops: stops, startPoint: .top, endPoint: .bottom)
 
             ZStack {
-                // The halo adds its light to what is behind; the shape itself is
-                // painted normally. Adding both washed the colour out — additive
-                // channels climb toward white, so the ribbon turned pale exactly where
-                // it was brightest. The glow belongs around the shape, not in it.
+                // A dark track under the ribbon, and the reason for it is not taste.
+                // Additive light can only brighten what is behind it, so on a pale
+                // window there was nothing to add to and the glow vanished. Giving
+                // the band its own darkness means it looks the same over any window,
+                // and the contrast is also where crispness comes from — Siri's glow
+                // sits on a darkened surface for both of these reasons.
+                Capsule()
+                    .fill(Color.black.opacity(colorScheme == .light ? 0.34 : 0.24))
+
+                // Two halos rather than one: a wide dim wash for falloff and a tight
+                // bright one at the edge. A single broad blur reads as haze; the pair
+                // reads as something burning.
                 shape.fill(fill)
-                    .blur(radius: 8)
-                    .opacity(0.8)
+                    .blur(radius: 11)
+                    .opacity(0.45)
+                    .blendMode(.plusLighter)
+
+                shape.fill(fill)
+                    .blur(radius: 3)
+                    .opacity(0.9)
                     .blendMode(.plusLighter)
 
                 shape.fill(fill)
             }
             .compositingGroup()
+            .clipShape(Capsule())
             .frame(height: Self.height)
         }
         .frame(height: Self.height)
