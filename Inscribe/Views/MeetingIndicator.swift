@@ -42,6 +42,7 @@ final class MeetingIndicatorController {
         model.spectrum = spectrum
         model.isPaused = isPaused
         model.seconds = seconds
+        model.contentOpacity = settings.overlayContentOpacity
         applyTint()
     }
 
@@ -155,6 +156,7 @@ final class MeetingIndicatorModel {
     var spectrum: [Double] = []
     var isPaused = false
     var seconds: TimeInterval = 0
+    var contentOpacity: Double = 1.0
 }
 
 private struct MeetingIndicatorView: View {
@@ -174,6 +176,7 @@ private struct MeetingIndicatorView: View {
                     .foregroundStyle(.primary)
             }
         }
+        .opacity(model.contentOpacity)
         .padding(.horizontal, 14)
         .padding(.vertical, 8)
         .frame(width: MeetingIndicatorController.width, height: MeetingIndicatorController.height)

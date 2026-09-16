@@ -57,6 +57,7 @@ final class DictationOverlayController {
 
         position(panel)
         applyOpacity()
+        applyContentOpacity()
         // orderFrontRegardless, not makeKeyAndOrderFront: taking key status would pull
         // focus out of the app being dictated into, which is where the text must land.
         panel?.orderFrontRegardless()
@@ -65,6 +66,7 @@ final class DictationOverlayController {
     func update(text: String, spectrum: [Double]) {
         model.spectrum = spectrum
         applyOpacity()
+        applyContentOpacity()
 
         // Only when it changed: the band wants twenty updates a second, and laying out
         // a panel-tall block of text that often to say the same words is waste.
@@ -94,6 +96,14 @@ final class DictationOverlayController {
         guard abs(glassView.alphaValue - wanted) > 0.001 else { return }
         glassView.alphaValue = wanted
         model.paneOpacity = wanted
+    }
+
+    /// The words and the band carry their own setting, so a pane turned right down can
+    /// still hold solid text, or a solid pane can hold text that stays out of the way.
+    private func applyContentOpacity() {
+        let wanted = settings.overlayContentOpacity
+        guard abs(model.contentOpacity - wanted) > 0.001 else { return }
+        model.contentOpacity = wanted
     }
 
     func showProcessing() {
@@ -294,6 +304,9 @@ final class OverlayModel {
     /// How solid the pane behind is, so the rim drawn on top can match it.
     var paneOpacity: Double = 0.75
 
+    /// How solid the words and the band are.
+    var contentOpacity: Double = 1.0
+
     /// How tall the text may grow before older lines are pushed off the top. Set from
     /// the room left between the panel's bottom edge and the top of its screen.
     var maxTextHeight: CGFloat = DictationOverlayView.lineHeight * 5
@@ -333,6 +346,9 @@ private struct DictationOverlayView: View {
                     model.textHeight = height
                 }
         }
+        // The contents carry their own setting; the rim below belongs to the pane and
+        // takes the pane's.
+        .opacity(model.contentOpacity)
         .padding(.horizontal, 18)
         .padding(.vertical, DictationOverlayController.verticalPadding / 2)
         .frame(width: DictationOverlayController.width)

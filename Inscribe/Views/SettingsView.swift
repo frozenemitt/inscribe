@@ -1268,6 +1268,19 @@ struct HotkeySettingsView: View {
 
 #if os(macOS)
 struct OutputSettingsView: View {
+    /// One labelled slider with its value beside it. Two of these read as a pair.
+    private func solidityRow(_ label: String, value: Binding<Double>) -> some View {
+        HStack {
+            Text(label)
+                .frame(width: 96, alignment: .leading)
+            Slider(value: value, in: 0.25...1)
+            Text(value.wrappedValue.formatted(.percent.precision(.fractionLength(0))))
+                .monospacedDigit()
+                .foregroundStyle(.secondary)
+                .frame(width: 44, alignment: .trailing)
+        }
+    }
+
     @Environment(AppSettings.self) private var settings
     @Environment(RecordingCoordinator.self) private var coordinator
 
@@ -1317,16 +1330,10 @@ struct OutputSettingsView: View {
                     .foregroundStyle(.secondary)
 
                 if settings.showDictationOverlay {
-                    HStack {
-                        Text("How solid")
-                        Slider(value: $settings.overlayOpacity, in: 0.25...1)
-                        Text(settings.overlayOpacity.formatted(.percent.precision(.fractionLength(0))))
-                            .monospacedDigit()
-                            .foregroundStyle(.secondary)
-                            .frame(width: 44, alignment: .trailing)
-                    }
+                    solidityRow("Background", value: $settings.overlayOpacity)
+                    solidityRow("Text and band", value: $settings.overlayContentOpacity)
 
-                    Text("The panel is glass. Turn it down to read the window underneath through it, up when the text matters more than what it covers.")
+                    Text("Two separate dials. The background is glass — turn it down to read the window underneath through it. The text and band sit on top and keep their own setting, so a pane you can see straight through can still carry words you can read.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
 
