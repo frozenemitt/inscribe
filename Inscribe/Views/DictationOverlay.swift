@@ -234,11 +234,8 @@ private struct DictationOverlayView: View {
     }()
 
     var body: some View {
-        HStack(alignment: .top, spacing: 12) {
-            Image(systemName: model.isProcessing ? "brain" : "waveform")
-                .font(.title2)
-                .foregroundStyle(model.isProcessing ? .orange : .red)
-                .symbolEffect(.variableColor.iterative, options: .repeating)
+        VStack(alignment: .leading, spacing: 10) {
+            ListeningBar(isProcessing: model.isProcessing)
 
             // Clipped to the newest lines rather than truncated.
             //
@@ -275,6 +272,43 @@ private struct DictationOverlayView: View {
     private var displayText: String {
         if model.isProcessing { return "Processing…" }
         return model.text.isEmpty ? "Listening…" : model.text
+    }
+}
+
+/// A thin band of moving colour across the top of the panel.
+///
+/// It replaced an icon beside the text, which took a quarter of the width and made
+/// every line wrap sooner — so the panel grew taller to say the same thing. A band
+/// above the words costs four points of height and gives the text the full width.
+private struct ListeningBar: View {
+    let isProcessing: Bool
+
+    /// Seconds for the colour to travel the width once.
+    private let period: TimeInterval = 2.4
+
+    var body: some View {
+        TimelineView(.animation) { context in
+            let phase = CGFloat(
+                context.date.timeIntervalSinceReferenceDate
+                    .truncatingRemainder(dividingBy: period) / period
+            )
+
+            Capsule()
+                .fill(
+                    LinearGradient(
+                        colors: colors,
+                        startPoint: UnitPoint(x: phase * 2 - 0.8, y: 0.5),
+                        endPoint: UnitPoint(x: phase * 2 + 0.2, y: 0.5)
+                    )
+                )
+                .frame(height: 4)
+        }
+    }
+
+    private var colors: [Color] {
+        isProcessing
+            ? [.orange.opacity(0.25), .orange, .orange.opacity(0.25)]
+            : [.blue.opacity(0.25), .purple, .pink, .blue.opacity(0.25)]
     }
 }
 #endif
