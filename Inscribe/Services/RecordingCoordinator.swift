@@ -221,10 +221,12 @@ final class RecordingCoordinator {
 
     /// Stop, transcribe, optionally run the AI pass, then deliver the text.
     func stopAndProcess() async {
+        Log.dictation.notice("COORD stopAndProcess called")
         // A release that lands while the engine is still coming up waits for it,
         // rather than being dropped and leaving the microphone running.
         if let startTask { await startTask.value }
 
+        Log.dictation.notice("COORD past startTask, isRecording=\(self.isRecording, privacy: .public)")
         guard isRecording else { return }
         maxDurationTask?.cancel()
         maxDurationTask = nil

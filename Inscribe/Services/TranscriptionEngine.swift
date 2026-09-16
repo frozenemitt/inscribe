@@ -288,6 +288,7 @@ final class TranscriptionEngine {
         // Held, not released: nothing else may take the engine until this session has
         // finished handing back its words.
         phase = .stopping
+        Log.dictation.notice("STEP 1 entered stopRecording")
 
         // Stop audio capture helper. This finishes the audio stream, so the task
         // below runs out of buffers on its own.
@@ -297,17 +298,20 @@ final class TranscriptionEngine {
         // Awaited rather than cancelled. An AsyncStream iterator throws away whatever
         // is still buffered when it is cancelled, and what is still buffered is
         // always the end of the sentence the user just spoke.
+        Log.dictation.notice("STEP 2 capture stopped")
         let audioTask = audioProcessingTask
         if await !Self.bounded(2, { _ = await audioTask?.value }) {
             Self.log.error("audio did not drain in 2s — cancelling")
             audioProcessingTask?.cancel()
         }
+        Log.dictation.notice("STEP 3 audio drained")
         audioProcessingTask = nil
 
         // Finalize transcription
 
         analyzerInputContinuation?.finish()
 
+        Log.dictation.notice("STEP 4 input finished")
         var finalized = true
         let analyzer = speechAnalyzer
         let finishedInTime = await Self.bounded(3) {
@@ -318,6 +322,7 @@ final class TranscriptionEngine {
             }
         }
 
+        Log.dictation.notice("STEP 5 finalize returned")
         if !finishedInTime {
             // Seen on recordings of a few tens of milliseconds: finalization simply
             // never returns. Waiting forever costs the whole engine.
@@ -355,6 +360,7 @@ final class TranscriptionEngine {
             recognitionTask?.cancel()
         }
 
+        Log.dictation.notice("STEP 6 results drained")
         recognitionTask = nil
         teardownSession()
 
