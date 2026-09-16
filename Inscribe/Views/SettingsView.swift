@@ -1269,6 +1269,7 @@ struct HotkeySettingsView: View {
 #if os(macOS)
 struct OutputSettingsView: View {
     @Environment(AppSettings.self) private var settings
+    @Environment(RecordingCoordinator.self) private var coordinator
 
     var body: some View {
         @Bindable var settings = settings
@@ -1311,9 +1312,28 @@ struct OutputSettingsView: View {
             Section("While Speaking") {
                 Toggle("Show the words as you say them", isOn: $settings.showDictationOverlay)
 
-                Text("Floats a panel above other windows while you hold the key, so you can see the dictation landing rather than trusting a sound.")
+                Text("Floats a panel above other windows while you hold the key, so you can see the dictation landing rather than trusting a sound. Drag it anywhere; it comes back where you left it.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+
+                if settings.showDictationOverlay {
+                    HStack {
+                        Text("How solid")
+                        Slider(value: $settings.overlayOpacity, in: 0.25...1)
+                        Text(settings.overlayOpacity.formatted(.percent.precision(.fractionLength(0))))
+                            .monospacedDigit()
+                            .foregroundStyle(.secondary)
+                            .frame(width: 44, alignment: .trailing)
+                    }
+
+                    Text("The panel is glass. Turn it down to read the window underneath through it, up when the text matters more than what it covers.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+
+                    Button("Move it back to the bottom") {
+                        coordinator.resetOverlayPosition()
+                    }
+                }
             }
 
             Section("Context") {
