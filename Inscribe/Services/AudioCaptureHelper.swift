@@ -106,7 +106,7 @@ final class AudioCaptureHelper: @unchecked Sendable {
         let deviceName = AudioDeviceCatalog.device(forUID: uid)?.name ?? uid
 
         guard let audioUnit = inputNode.audioUnit else {
-            Log.audio.notice("No audio unit on the input node")
+            Log.audio.error("No audio unit on the input node")
             return
         }
 

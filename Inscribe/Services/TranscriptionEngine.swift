@@ -442,7 +442,7 @@ final class TranscriptionEngine {
 
     private func checkMicrophoneAuthorization() async -> Bool {
         let audioStatus = AVCaptureDevice.authorizationStatus(for: .audio)
-        Log.dictation.error("Microphone auth status: \(audioStatus.rawValue, privacy: .public) (0=notDetermined, 1=restricted, 2=denied, 3=authorized)")
+        Log.dictation.notice("Microphone auth status: \(audioStatus.rawValue, privacy: .public) (0=notDetermined, 1=restricted, 2=denied, 3=authorized)")
 
         switch audioStatus {
         case .authorized:

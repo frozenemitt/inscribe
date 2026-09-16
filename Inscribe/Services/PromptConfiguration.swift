@@ -399,7 +399,7 @@ final class PromptConfiguration {
         }
 
         guard !prompts[index].isBuiltIn else {
-            Log.prompts.error("Cannot update built-in prompt: \(prompt.name)")
+            Log.prompts.notice("Cannot update built-in prompt: \(prompt.name)")
             return
         }
 
@@ -416,7 +416,7 @@ final class PromptConfiguration {
         }
 
         guard !prompts[index].isBuiltIn else {
-            Log.prompts.error("Cannot delete built-in prompt")
+            Log.prompts.notice("Cannot delete built-in prompt")
             return
         }
 
