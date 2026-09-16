@@ -337,10 +337,15 @@ final class TranscriptionEngine {
     private func applyLevel(_ reading: Double) {
         inputLevel = reading > inputLevel
             ? inputLevel + (reading - inputLevel) * 0.6
-            : inputLevel + (reading - inputLevel) * 0.12
+            : inputLevel + (reading - inputLevel) * 0.22
     }
 
-    /// Loudness of one buffer, as 0 to 1 across a 60 dB range.
+    /// Loudness of one buffer, as 0 to 1 across the range a voice actually occupies.
+    ///
+    /// A full 60 dB window spends most of itself on silences no microphone reaches, so
+    /// the difference between a whisper and a shout came out as a few points of
+    /// height. Soft speech sits near -45 dB and a raised voice near -10, and those are
+    /// the ends worth spreading across the band.
     private nonisolated static func level(of buffer: AVAudioPCMBuffer) -> Double {
         guard let samples = buffer.floatChannelData?[0], buffer.frameLength > 0 else { return 0 }
 
@@ -352,7 +357,7 @@ final class TranscriptionEngine {
         guard rms > 0 else { return 0 }
 
         let decibels = 20 * log10(Double(rms))
-        return min(max((decibels + 60) / 60, 0), 1)
+        return min(max((decibels + 50) / 45, 0), 1)
     }
 
     /// Hand the engine back.
