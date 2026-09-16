@@ -54,8 +54,12 @@ final class DictationOverlayController {
     }
 
     func update(text: String, level: Double) {
-        model.text = text
         model.level = level
+
+        // Only when it changed: the band wants twenty updates a second, and laying out
+        // a panel-tall block of text that often to say the same words is waste.
+        guard model.text != text else { return }
+        model.text = text
         growToFit()
     }
 
@@ -332,8 +336,19 @@ private struct ListeningBar: View {
     /// quiet reads as visibly quiet rather than slightly quieter.
     private func barHeight(index: Int, time: TimeInterval) -> CGFloat {
         let ripple = sin(time * 3.2 + Double(index) * 0.45) * 0.18 + 0.82
-        let amplitude = isProcessing ? 0.55 : pow(level, 1.3)
+        let amplitude = isProcessing ? 0.55 : Self.curve(level)
         return 2 + Self.height * 0.9 * CGFloat(amplitude * ripple)
+    }
+
+    /// Spread the quiet end of the range and compress the loud one.
+    ///
+    /// Loudness is already measured in decibels, so the band was linear in something
+    /// logarithmic. Bending it again gives the quiet-to-middle stretch most of the
+    /// height, which is where speech spends its time and where the movement is worth
+    /// watching; the top compresses, so a raised voice fills the band without the
+    /// difference between loud and louder eating the whole scale.
+    private static func curve(_ level: Double) -> Double {
+        log10(1 + 9 * min(max(level, 0), 1))
     }
 
     private var colors: [Color] {

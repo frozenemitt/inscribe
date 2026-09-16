@@ -37,7 +37,9 @@ final class RecordingCoordinator {
     /// Polls the engine while recording so the overlay tracks the live text.
     ///
     /// A timer rather than observation: the transcriber revises its volatile text many
-    /// times a second, and redrawing a window on every revision is wasteful.
+    /// times a second, and redrawing a window on every revision is wasteful. It runs at
+    /// twenty a second for the level band's sake; the text is only handed over when it
+    /// has actually changed, so the cost of the faster tick is one number.
     private var overlayTicker: Task<Void, Never>?
     #endif
 
@@ -431,7 +433,7 @@ final class RecordingCoordinator {
                     text: self.engine.currentTranscript + self.engine.volatileText,
                     level: self.engine.inputLevel
                 )
-                try? await Task.sleep(for: .milliseconds(120))
+                try? await Task.sleep(for: .milliseconds(50))
             }
         }
     }
