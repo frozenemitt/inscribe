@@ -293,61 +293,65 @@ private struct DictationOverlayView: View {
 /// shows the shape of the voice rather than only its volume — and a silent room is a
 /// flat line. That is the question the panel exists to answer: is it hearing me.
 private struct ListeningBar: View {
+    @Environment(\.colorScheme) private var colorScheme
+
     let spectrum: [Double]
     let isProcessing: Bool
 
     private static let barCount = 48
     private static let height: CGFloat = 22
 
-    /// Seconds for the colour to travel the width once.
-    private let period: TimeInterval = 2.4
-
     var body: some View {
         TimelineView(.animation) { context in
             let time = context.date.timeIntervalSinceReferenceDate
-            let phase = CGFloat(time.truncatingRemainder(dividingBy: period) / period)
 
-            LinearGradient(
-                colors: colors,
-                startPoint: UnitPoint(x: phase * 2 - 0.8, y: 0.5),
-                endPoint: UnitPoint(x: phase * 2 + 0.2, y: 0.5)
-            )
-            .frame(height: Self.height)
-            // The colour is one sheet; the bars cut the shape out of it, so every bar
-            // carries the part of the gradient it is standing in.
-            .mask {
-                HStack(alignment: .center, spacing: 2) {
-                    ForEach(0..<Self.barCount, id: \.self) { index in
-                        Capsule()
-                            .frame(height: barHeight(index: index, time: time))
-                    }
+            HStack(alignment: .center, spacing: 2) {
+                ForEach(0..<Self.barCount, id: \.self) { index in
+                    let amplitude = amplitude(index: index, time: time)
+                    Capsule()
+                        .fill(color(for: amplitude))
+                        .frame(height: 2 + Self.height * 0.9 * CGFloat(amplitude))
                 }
             }
+            .frame(height: Self.height)
         }
         .frame(height: Self.height)
     }
 
-    /// Each bar rides its own slow wave, so the band ripples rather than pumping as
-    /// one block. Amplitude is the voice; the wave only decides the shape.
-    ///
-    /// The ripple used to swing between a third and full height on its own, which
-    /// swamped the voice underneath it: the band looked equally busy however softly
-    /// you spoke. It is a gentler shape now, and the loudness is raised to a power so
-    /// quiet reads as visibly quiet rather than slightly quieter.
     /// One bar per frequency band, straight from the microphone.
     ///
     /// Nothing here invents movement any more. Every bar is the loudness of its own
     /// slice of the spectrum, so vowels fill the left of the band, an "s" lights the
     /// right, and a silent room is a flat line. Only the AI pass, which has no audio
     /// to show, still falls back to a moving shape.
-    private func barHeight(index: Int, time: TimeInterval) -> CGFloat {
-        let amplitude: Double
+    private func amplitude(index: Int, time: TimeInterval) -> Double {
         if isProcessing {
-            amplitude = 0.55 * (sin(time * 3.2 + Double(index) * 0.45) * 0.18 + 0.82)
-        } else {
-            amplitude = index < spectrum.count ? Self.curve(spectrum[index]) : 0
+            return 0.55 * (sin(time * 3.2 + Double(index) * 0.45) * 0.18 + 0.82)
         }
-        return 2 + Self.height * 0.9 * CGFloat(amplitude)
+        return index < spectrum.count ? Self.curve(spectrum[index]) : 0
+    }
+
+    /// Colour is the bar's own height, so the band reads as a contour rather than a
+    /// pattern moving across it.
+    ///
+    /// A gradient travelling on a timer competed with the spectrum for attention: two
+    /// things moving, only one of them meaning anything. Hue runs from blue-violet at
+    /// the floor down through green and amber to red at the peak, and saturation and
+    /// brightness rise with it, so a loud band is both hotter and more vivid.
+    private func color(for amplitude: Double) -> Color {
+        if isProcessing {
+            return Color(hue: 0.09, saturation: 0.85, brightness: 0.95)
+        }
+
+        let level = min(max(amplitude, 0), 1)
+        return Color(
+            hue: 0.70 - 0.70 * level,
+            saturation: 0.55 + 0.45 * level,
+            // Held a little darker on a light background, where a pale violet at the
+            // floor disappears into the glass behind it.
+            brightness: (colorScheme == .light ? 0.50 : 0.62) + 0.38 * level,
+            opacity: 0.55 + 0.45 * level
+        )
     }
 
     /// Spread the quiet end of the range and compress the loud one.
@@ -359,12 +363,6 @@ private struct ListeningBar: View {
     /// difference between loud and louder eating the whole scale.
     private static func curve(_ level: Double) -> Double {
         log10(1 + 9 * min(max(level, 0), 1))
-    }
-
-    private var colors: [Color] {
-        isProcessing
-            ? [.orange.opacity(0.25), .orange, .orange.opacity(0.25)]
-            : [.blue.opacity(0.25), .purple, .pink, .blue.opacity(0.25)]
     }
 }
 #endif
