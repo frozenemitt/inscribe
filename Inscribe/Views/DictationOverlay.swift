@@ -21,6 +21,9 @@ final class DictationOverlayController {
     /// Held so the panel's move notifications keep arriving for the life of the app.
     private var moveObserver: (any NSObjectProtocol)?
 
+    /// Measured to size the panel: the glass view around it reports nothing useful.
+    private var hostingView: NSHostingView<DictationOverlayView>?
+
     static let minimumHeight: CGFloat = 92
     static let width: CGFloat = 460
 
@@ -151,15 +154,28 @@ final class DictationOverlayController {
         // never sees a click and the panel could not be dragged at all. This view sits
         // under the content, takes every hit, and drags the window itself. Safe
         // because the panel is display-only: there is nothing in it to click.
-        let container = DragHandleView()
         let hosting = NSHostingView(rootView: DictationOverlayView(model: model))
         hosting.translatesAutoresizingMaskIntoConstraints = false
-        container.addSubview(hosting)
+        self.hostingView = hosting
+
+        // The glass the panel is made of. AppKit's own view rather than SwiftUI's
+        // modifier: this one samples the windows behind the panel, which is where the
+        // lensing comes from and what the SwiftUI version had no access to inside a
+        // borderless transparent panel.
+        let glass = NSGlassEffectView()
+        glass.translatesAutoresizingMaskIntoConstraints = false
+        glass.style = .regular
+        glass.cornerRadius = 16
+        glass.tintColor = NSColor.black.withAlphaComponent(0.45)
+        glass.contentView = hosting
+
+        let container = DragHandleView()
+        container.addSubview(glass)
         NSLayoutConstraint.activate([
-            hosting.leadingAnchor.constraint(equalTo: container.leadingAnchor),
-            hosting.trailingAnchor.constraint(equalTo: container.trailingAnchor),
-            hosting.topAnchor.constraint(equalTo: container.topAnchor),
-            hosting.bottomAnchor.constraint(equalTo: container.bottomAnchor)
+            glass.leadingAnchor.constraint(equalTo: container.leadingAnchor),
+            glass.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+            glass.topAnchor.constraint(equalTo: container.topAnchor),
+            glass.bottomAnchor.constraint(equalTo: container.bottomAnchor)
         ])
         panel.contentView = container
 
@@ -264,20 +280,10 @@ private struct DictationOverlayView: View {
         .padding(.vertical, 14)
         .frame(width: DictationOverlayController.width)
         .frame(minHeight: DictationOverlayController.minimumHeight)
-        // Real glass, tinted dark from the inside rather than covered over.
-        //
-        // A black rectangle laid on top of the material hid the very thing that makes
-        // it glass: the lensing and the specular edge were still being drawn, and then
-        // painted out. `Glass` takes a tint, which darkens the material itself and
-        // leaves the refraction of the window behind intact.
-        .glassEffect(
-            .regular.tint(.black.opacity(0.5)),
-            in: RoundedRectangle(cornerRadius: 16)
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: 16)
-                .strokeBorder(Color.white.opacity(0.10), lineWidth: 1)
-        )
+        // No background here. The glass is an NSGlassEffectView behind this view,
+        // because SwiftUI's own glass had nothing to refract: inside a borderless
+        // transparent panel it never sampled the windows behind the panel, and read
+        // as a thin sheet of plastic.
         // Rendered dark throughout, so the text comes out light and the glass picks
         // its dark treatment, rather than each part being told separately.
         .environment(\.colorScheme, .dark)
@@ -383,10 +389,10 @@ private struct ListeningBar: View {
     /// Pinch the first and last few points down to nothing.
     ///
     /// The ribbon used to begin and end at whatever its outermost band happened to be
-    /// doing, so both ends were a cut edge. A raised cosine over the outer eighth
+    /// doing, so both ends were a cut edge. A raised cosine over the outer quarter
     /// brings it to a point instead, and the shape enters and leaves like a feather.
     private static func taper(_ index: Int, of count: Int) -> CGFloat {
-        let width = Double(count) / 8
+        let width = Double(count) / 4
         let distance = Double(min(index, count - 1 - index))
         guard distance < width else { return 1 }
         return CGFloat(0.5 - 0.5 * cos(.pi * distance / width))
