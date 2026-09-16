@@ -21,6 +21,8 @@ final class MeetingIndicatorController {
     private let model = MeetingIndicatorModel()
     private let settings: AppSettings
     private var moveObserver: (any NSObjectProtocol)?
+    /// Held so the desktop-change notifications keep arriving for the life of the app.
+    private var spaceObserver: (any NSObjectProtocol)?
 
     /// What the panel's two buttons do. Set by whoever owns the meeting.
     var onPauseOrResume: (() -> Void)?
@@ -129,6 +131,24 @@ final class MeetingIndicatorController {
                 guard let self, let panel = self.panel else { return }
                 self.settings.meetingIndicatorOriginX = panel.frame.origin.x
                 self.settings.meetingIndicatorOriginY = panel.frame.origin.y
+            }
+        }
+
+        // Said again whenever the user changes desktop.
+        //
+        // show() runs once per meeting, so a panel that lost its collection behaviour
+        // after the meeting began would stay on one desktop for the rest of the hour,
+        // which is the whole failure this panel exists to prevent. A desktop change is
+        // the only moment that costs anything and it happens a few times an hour. The
+        // window server applies the assignment within a frame, and the panel does not
+        // have to be reordered, so nothing blinks.
+        spaceObserver = NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.activeSpaceDidChangeNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                self?.panel?.collectionBehavior = Self.collectionBehavior
             }
         }
 
