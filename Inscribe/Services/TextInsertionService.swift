@@ -193,9 +193,24 @@ enum TextInsertionService {
         }
 
         guard await pasteLanded(in: field, changedFrom: fieldBeforePaste) else {
-            log.notice("""
+            // The read-back says the field never moved, which has two very different
+            // causes and the same appearance: the paste really did not land, or it
+            // landed and this element did not report it — Electron fields update their
+            // accessibility value late, or not at all.
+            //
+            // Lengths and a yes-or-no, never the text itself. Whether the transcript is
+            // now in the field is the whole question, and it decides whether a fix
+            // belongs in the pasting or in the checking.
+            let after = state(of: field)
+            let landed = after.text?.contains(text) ?? false
+            log.error("""
                 ⌘V did nothing in \(appName, privacy: .public) \
-                — leaving the transcript on the clipboard
+                — leaving the transcript on the clipboard. \
+                field was \(fieldBeforePaste.text?.count ?? -1, privacy: .public) chars, \
+                now \(after.text?.count ?? -1, privacy: .public); \
+                caret \(fieldBeforePaste.caret ?? -1, privacy: .public) → \
+                \(after.caret ?? -1, privacy: .public); \
+                transcript present: \(landed, privacy: .public)
                 """)
             return .copiedToClipboard(reason: .insertionFailed)
         }
