@@ -325,9 +325,14 @@ private struct ListeningBar: View {
 
     /// Each bar rides its own slow wave, so the band ripples rather than pumping as
     /// one block. Amplitude is the voice; the wave only decides the shape.
+    ///
+    /// The ripple used to swing between a third and full height on its own, which
+    /// swamped the voice underneath it: the band looked equally busy however softly
+    /// you spoke. It is a gentler shape now, and the loudness is raised to a power so
+    /// quiet reads as visibly quiet rather than slightly quieter.
     private func barHeight(index: Int, time: TimeInterval) -> CGFloat {
-        let ripple = sin(time * 3.2 + Double(index) * 0.45) * 0.35 + 0.65
-        let amplitude = isProcessing ? 0.55 : level
+        let ripple = sin(time * 3.2 + Double(index) * 0.45) * 0.18 + 0.82
+        let amplitude = isProcessing ? 0.55 : pow(level, 1.4)
         return 2 + Self.height * 0.9 * CGFloat(amplitude * ripple)
     }
 
