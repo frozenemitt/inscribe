@@ -305,26 +305,48 @@ private struct ListeningBar: View {
     var body: some View {
         TimelineView(.animation) { context in
             let time = context.date.timeIntervalSinceReferenceDate
+            let amplitudes = (0..<Self.barCount).map { amplitude(index: $0, time: time) }
 
-            HStack(alignment: .center, spacing: 2) {
-                ForEach(0..<Self.barCount, id: \.self) { index in
-                    let amplitude = amplitude(index: index, time: time)
+            ZStack {
+                // A blurred copy underneath, which is where the light comes from.
+                // Flat fills with hard edges read as an instrument panel; the same
+                // shape with a bloom around it reads as something lit from within,
+                // which is the whole difference over glass.
+                row(amplitudes)
+                    .blur(radius: 6)
+                    .opacity(0.55)
 
-                    // The gradient is anchored to the band, not to the bar, and the
-                    // bar is a window onto it. So every bar shows the same colour at
-                    // the centre line, and only a tall one reaches the vivid ends —
-                    // which makes the colour say the same thing the height does.
-                    gradient
-                        .frame(height: Self.height)
-                        .mask {
-                            Capsule()
-                                .frame(height: 2 + Self.height * 0.9 * CGFloat(amplitude))
-                        }
-                }
+                row(amplitudes)
             }
             .frame(height: Self.height)
         }
         .frame(height: Self.height)
+    }
+
+    private func row(_ amplitudes: [Double]) -> some View {
+        HStack(alignment: .center, spacing: 3) {
+            ForEach(0..<Self.barCount, id: \.self) { index in
+                // The gradient is anchored to the band, not to the bar, and the bar is
+                // a window onto it. So every bar shows the same colour at the centre
+                // line, and only a tall one reaches the vivid ends — which makes the
+                // colour say the same thing the height does.
+                gradient
+                    .frame(height: Self.height)
+                    .mask {
+                        Capsule()
+                            .frame(height: Self.barHeight(for: amplitudes[index]))
+                    }
+            }
+        }
+    }
+
+    /// A resting bar is a soft line, not a dot.
+    ///
+    /// The floor used to be two points, so silence drew forty-eight separate dashes
+    /// and looked like something had failed. At four they meet into a quiet line that
+    /// reads as waiting.
+    private static func barHeight(for amplitude: Double) -> CGFloat {
+        4 + height * 0.82 * CGFloat(amplitude)
     }
 
     /// One bar per frequency band, straight from the microphone.
