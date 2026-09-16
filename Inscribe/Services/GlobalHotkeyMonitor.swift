@@ -361,7 +361,13 @@ final class GlobalHotkeyMonitor {
     /// missed its deadline, and every keystroke queued behind it was dropped — so it
     /// gets said out loud rather than quietly patched over.
     fileprivate nonisolated func tapWasDisabled(byTimeout: Bool) {
-        Self.log.error("tap disabled by \(byTimeout ? "TIMEOUT" : "user input", privacy: .public), re-enabling")
+        // A tap switched off by user input is routine; a timeout means the callback
+        // missed its deadline and keystrokes were dropped, which is not.
+        if byTimeout {
+            Self.log.error("tap disabled by TIMEOUT, re-enabling")
+        } else {
+            Self.log.notice("tap disabled by user input, re-enabling")
+        }
         guard let tapPort else {
             Self.log.error("no tap port to re-enable")
             return

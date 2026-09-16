@@ -112,7 +112,7 @@ struct QuickTranscribeIntent: AppIntent {
                     // A name matching no prompt is a typo in the shortcut. Reported
                     // rather than thrown: the recording is already spent, and the
                     // transcript is still worth handing back.
-                    Log.intents.notice("No prompt named '\(promptName)'")
+                    Log.intents.error("No prompt named '\(promptName)'")
                     aiFailureReason = "No prompt is named \"\(promptName)\"."
                 }
             }
