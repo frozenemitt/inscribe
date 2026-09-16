@@ -85,6 +85,11 @@ final class DictationOverlayController {
     private func growToFit() {
         guard let panel, let content = panel.contentView else { return }
 
+        let ceiling = availableTextHeight(for: panel)
+        if abs(model.maxTextHeight - ceiling) > 0.5 {
+            model.maxTextHeight = ceiling
+        }
+
         content.layoutSubtreeIfNeeded()
         let height = max(content.fittingSize.height, Self.minimumHeight)
         guard abs(panel.frame.height - height) > 0.5 else { return }
@@ -95,6 +100,22 @@ final class DictationOverlayController {
         frame.size.height = height
         panel.setFrame(frame, display: true)
     }
+
+    /// The room between the panel's bottom edge and the top of the screen it is on.
+    ///
+    /// The panel grows upward, so this is its ceiling. Dragging it higher leaves less
+    /// room and the oldest lines start dropping off sooner, which is the honest
+    /// behaviour: it can only show what fits.
+    private func availableTextHeight(for panel: NSPanel) -> CGFloat {
+        guard let screen = panel.screen ?? NSScreen.main else {
+            return DictationOverlayView.lineHeight * 5
+        }
+        let room = screen.visibleFrame.maxY - 12 - panel.frame.minY - Self.chromeHeight
+        return max(room, DictationOverlayView.lineHeight)
+    }
+
+    /// The panel's own padding, above and below the text.
+    private static let chromeHeight: CGFloat = 28
 
     // MARK: - Panel
 
@@ -120,7 +141,22 @@ final class DictationOverlayController {
         // Visible over full-screen apps and on every desktop: a call is usually
         // full-screen, and that is exactly when the overlay is wanted.
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
-        panel.contentView = NSHostingView(rootView: DictationOverlayView(model: model))
+
+        // The SwiftUI content swallows the mouse, so `isMovableByWindowBackground`
+        // never sees a click and the panel could not be dragged at all. This view sits
+        // under the content, takes every hit, and drags the window itself. Safe
+        // because the panel is display-only: there is nothing in it to click.
+        let container = DragHandleView()
+        let hosting = NSHostingView(rootView: DictationOverlayView(model: model))
+        hosting.translatesAutoresizingMaskIntoConstraints = false
+        container.addSubview(hosting)
+        NSLayoutConstraint.activate([
+            hosting.leadingAnchor.constraint(equalTo: container.leadingAnchor),
+            hosting.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+            hosting.topAnchor.constraint(equalTo: container.topAnchor),
+            hosting.bottomAnchor.constraint(equalTo: container.bottomAnchor)
+        ])
+        panel.contentView = container
 
         // Remember where it was left. The panel moves while the user drags it, so this
         // fires often; writing a preference is cheap and the last one wins.
@@ -161,6 +197,17 @@ final class DictationOverlayController {
     }
 }
 
+/// Drags the panel from anywhere inside it.
+private final class DragHandleView: NSView {
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        super.hitTest(point) == nil ? nil : self
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        window?.performDrag(with: event)
+    }
+}
+
 /// Text the overlay is showing.
 @MainActor
 @Observable
@@ -168,6 +215,10 @@ final class OverlayModel {
     var text = ""
     var isProcessing = false
     var opacity: Double = 0.75
+
+    /// How tall the text may grow before older lines are pushed off the top. Set from
+    /// the room left between the panel's bottom edge and the top of its screen.
+    var maxTextHeight: CGFloat = DictationOverlayView.lineHeight * 5
 }
 
 // MARK: - View
@@ -175,11 +226,11 @@ final class OverlayModel {
 private struct DictationOverlayView: View {
     @Bindable var model: OverlayModel
 
-    /// Five lines of the text style actually in use, so it follows the system font
-    /// size rather than a number that happens to look right today.
-    static let visibleTextHeight: CGFloat = {
+    /// One line of the text style actually in use, so everything below follows the
+    /// system font size rather than a number that happens to look right today.
+    static let lineHeight: CGFloat = {
         let font = NSFont.preferredFont(forTextStyle: .title3)
-        return ceil(font.ascender - font.descender + font.leading) * 5
+        return ceil(font.ascender - font.descender + font.leading)
     }()
 
     var body: some View {
@@ -189,26 +240,25 @@ private struct DictationOverlayView: View {
                 .foregroundStyle(model.isProcessing ? .orange : .red)
                 .symbolEffect(.variableColor.iterative, options: .repeating)
 
-            // Clipped to the last five lines rather than truncated to five.
+            // Clipped to the newest lines rather than truncated.
             //
-            // `lineLimit(5)` with head truncation keeps the first four lines and puts
-            // the ellipsis inside the fifth, so a long dictation showed its opening
-            // and hid the words being spoken. Letting the text take its full height
-            // inside a bottom-aligned frame pushes the old lines off the top instead,
-            // which is the way round you need while you are still talking.
+            // `lineLimit` with head truncation keeps the first lines and puts the
+            // ellipsis inside the last, so a long dictation showed its opening and hid
+            // the words being spoken. Letting the text take its full height inside a
+            // bottom-aligned frame pushes the old lines off the top instead, which is
+            // the way round you need while you are still talking.
             Text(displayText)
                 .font(.title3)
                 .foregroundStyle(model.text.isEmpty ? .secondary : .primary)
                 .fixedSize(horizontal: false, vertical: true)
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .frame(maxHeight: Self.visibleTextHeight, alignment: .bottom)
+                .frame(maxHeight: model.maxTextHeight, alignment: .bottom)
                 .clipped()
         }
         .padding(.horizontal, 18)
         .padding(.vertical, 14)
         .frame(width: DictationOverlayController.width)
         .frame(minHeight: DictationOverlayController.minimumHeight)
-        // Glass behind, text in front, so fading the pane never costs legibility.
         .background {
             Color.clear
                 .glassEffect(.regular, in: RoundedRectangle(cornerRadius: 16))
@@ -216,8 +266,10 @@ private struct DictationOverlayView: View {
                     RoundedRectangle(cornerRadius: 16)
                         .strokeBorder(Color.primary.opacity(0.08), lineWidth: 1)
                 )
-                .opacity(model.opacity)
         }
+        // Text and glass fade together, so the whole panel recedes as one thing
+        // rather than leaving words floating over nothing.
+        .opacity(model.opacity)
     }
 
     private var displayText: String {
