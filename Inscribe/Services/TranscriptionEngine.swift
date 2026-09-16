@@ -636,33 +636,64 @@ final class TranscriptionEngine {
     }
 
     /// The first locale in `fallbackLocales` this system can actually transcribe.
+    /// Resolved once per run. Asking the system which locales it can transcribe takes
+    /// tens of milliseconds, and the answer cannot change while the app is open — but
+    /// it was being asked again on every single key press, before the microphone
+    /// opened, while the user waited to speak.
+    private static var cachedLocale: Locale?
+
     private func resolveSupportedLocale() async throws -> Locale {
+        if let cached = Self.cachedLocale { return cached }
+
         let supported = await SpeechTranscriber.supportedLocales
 
         for candidate in Self.fallbackLocales
         where supported.contains(where: { $0.identifier(.bcp47) == candidate.identifier(.bcp47) }) {
+            Self.cachedLocale = candidate
             return candidate
         }
 
         throw TranscriptionEngineError.localeNotSupported
     }
 
-    private func ensureModelAvailable(transcriber: SpeechTranscriber, locale: Locale) async throws {
-        Log.dictation.notice("Ensuring model is available...")
+    /// Whether the model has already been found and the locale reserved this run.
+    private static var assetsReady = false
 
-        // Check if download is needed
+    private func ensureModelAvailable(transcriber: SpeechTranscriber, locale: Locale) async throws {
+        // Both questions below are answered by the system and neither answer changes
+        // while the app runs, so they are asked once rather than on every key press.
+        // A model that needs downloading still downloads, and only the first recording
+        // waits for it.
+        if Self.assetsReady { return }
+
         if let downloader = try await AssetInventory.assetInstallationRequest(supporting: [transcriber]) {
             Log.dictation.notice("Downloading speech model...")
             try await downloader.downloadAndInstall()
         }
 
-        // Reserve the locale
         let reservedLocales = await AssetInventory.reservedLocales
         if !reservedLocales.contains(where: { $0.identifier(.bcp47) == locale.identifier(.bcp47) }) {
             try await AssetInventory.reserve(locale: locale)
         }
 
+        Self.assetsReady = true
         Log.dictation.notice("Using locale: \(locale.identifier, privacy: .public)")
+    }
+
+    /// Do the once-per-run work before the user asks for it.
+    ///
+    /// Called at launch so even the first dictation opens its microphone without
+    /// waiting for the locale list and the asset inventory.
+    func prepare() async {
+        guard let locale = try? await resolveSupportedLocale() else { return }
+        let transcriber = SpeechTranscriber(
+            locale: locale,
+            transcriptionOptions: [],
+            reportingOptions: [.volatileResults, .fastResults],
+            attributeOptions: [.audioTimeRange]
+        )
+        try? await ensureModelAvailable(transcriber: transcriber, locale: locale)
+        Log.dictation.notice("speech stack ready")
     }
 
     // MARK: - Cleanup
