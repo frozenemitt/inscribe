@@ -21,7 +21,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     var finishActiveMeeting: (@MainActor (@escaping () -> Void) -> Bool)?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        print("[AppDelegate] App finished launching")
+        Log.app.notice("App finished launching")
         onReady?()
     }
 
@@ -115,7 +115,7 @@ struct ScribeApp: App {
         // Register App Intents shortcuts
         _ = InscribeShortcuts.self
 
-        print("[ScribeApp] Initialized")
+        Log.app.notice("Initialized")
 
         #if os(macOS)
         // Wire up hotkey registration to fire at app launch, not on first menu click
@@ -127,7 +127,7 @@ struct ScribeApp: App {
         appDelegate.finishActiveMeeting = { [self] done in
             guard meetingRecorder.hasActiveMeeting else { return false }
 
-            print("[ScribeApp] Quitting with a meeting open — saving it first")
+            Log.app.notice("Quitting with a meeting open — saving it first")
             Task { @MainActor in
                 await meetingRecorder.stop(in: Self.modelContainer.mainContext)
                 done()
@@ -234,7 +234,7 @@ struct ScribeApp: App {
             _ = await transcriptionEngine.requestAuthorization()
         }
 
-        print("[ScribeApp] macOS setup complete")
+        Log.app.notice("macOS setup complete")
     }
 
     /// Point the monitor's edges at the coordinator.
@@ -262,7 +262,7 @@ struct ScribeApp: App {
             Task { @MainActor in
                 guard let text = await TextInsertionService.undoLastInsertion() else { return }
                 AudioFeedbackService.shared.playIfEnabled(.recordingStopped, settings: settings)
-                print("[ScribeApp] Undid \(text.count) characters")
+                Log.app.notice("Undid \(text.count) characters")
             }
         }
     }
@@ -293,10 +293,10 @@ struct ScribeApp: App {
 
         let started = hotkeyMonitor.start()
         let trigger = settings.useGlobeKey ? "Globe" : settings.hotkeyString
-        print("[ScribeApp] Hotkey \(trigger) in \(settings.hotkeyActivationModeRaw) mode, listening: \(started)")
+        Log.app.notice("Hotkey \(trigger, privacy: .public) in \(settings.hotkeyActivationModeRaw, privacy: .public) mode, listening: \(started, privacy: .public)")
 
         if let error = hotkeyMonitor.lastError {
-            print("[ScribeApp] Hotkey error: \(error)")
+            Log.app.error("Hotkey error: \(error, privacy: .public)")
         }
 
         if !started { armWhenTrustArrives() }
@@ -316,7 +316,7 @@ struct ScribeApp: App {
                 try? await Task.sleep(for: .seconds(2))
                 guard AccessibilityPermission.isTrusted else { continue }
                 if hotkeyMonitor.start() {
-                    print("[ScribeApp] Accessibility arrived, hotkey now listening")
+                    Log.app.notice("Accessibility arrived, hotkey now listening")
                     return
                 }
             }
@@ -353,7 +353,7 @@ struct ScribeApp: App {
         // Request notification authorization
         _ = NotificationService.shared
 
-        print("[ScribeApp] iOS setup complete")
+        Log.app.notice("iOS setup complete")
     }
     #endif
 }

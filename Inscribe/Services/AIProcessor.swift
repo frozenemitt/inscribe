@@ -1,4 +1,5 @@
 import Foundation
+import os
 import FoundationModels
 import Observation
 
@@ -84,7 +85,7 @@ final class AIProcessor {
 
         // Skip processing for "Raw" prompt
         if prompt.id == PromptConfiguration.rawPromptId {
-            print("[AIProcessor] Using raw prompt, returning text unchanged")
+            Log.ai.notice("Using raw prompt, returning text unchanged")
             return text
         }
 
@@ -166,7 +167,7 @@ final class AIProcessor {
             isProcessing = false
         }
 
-        print("[AIProcessor] Processing with prompt: \(prompt.name)")
+        Log.ai.notice("Processing with prompt: \(prompt.name)")
 
         do {
             // Create session with the prompt's system instructions
@@ -208,7 +209,7 @@ final class AIProcessor {
                 .replacingOccurrences(of: "</transcription>", with: "")
                 .trimmingCharacters(in: .whitespacesAndNewlines)
 
-            print("[AIProcessor] Processing complete, result length: \(cleaned.count)")
+            Log.ai.notice("Processing complete, result length: \(cleaned.count, privacy: .public)")
             return cleaned
 
         } catch FoundationModelsError.contextWindowExceeded {

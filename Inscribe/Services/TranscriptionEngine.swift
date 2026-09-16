@@ -180,7 +180,7 @@ final class TranscriptionEngine {
             phase = .starting
         }
 
-        print("[TranscriptionEngine] Starting recording...")
+        Log.dictation.notice("Starting recording...")
 
         // A previous start that threw part-way leaves an analyzer and a capture
         // helper alive with isRecording still false, which no stop path will ever
@@ -271,14 +271,14 @@ final class TranscriptionEngine {
     @discardableResult
     func stopRecording(owner: SessionOwner = .dictation) async throws -> String {
         guard phase == .recording else {
-            print("[TranscriptionEngine] Not recording, ignoring stop request")
+            Log.dictation.notice("Not recording, ignoring stop request")
             return currentTranscript
         }
 
         // Refuse to end someone else's session: a dictation hotkey must not stop a
         // meeting that happens to be using the same engine.
         guard self.owner == owner else {
-            print("[TranscriptionEngine] \(owner.rawValue) tried to stop a \(self.owner?.rawValue ?? "?") session")
+            Self.log.error("\(owner.rawValue, privacy: .public) tried to stop a \(self.owner?.rawValue ?? "none", privacy: .public) session")
             return currentTranscript
         }
 
@@ -408,7 +408,7 @@ final class TranscriptionEngine {
         guard phase == .starting || phase == .recording else { return }
 
         guard self.owner == owner else {
-            print("[TranscriptionEngine] \(owner.rawValue) tried to cancel a \(self.owner?.rawValue ?? "?") session")
+            Self.log.error("\(owner.rawValue, privacy: .public) tried to cancel a \(self.owner?.rawValue ?? "none", privacy: .public) session")
             return
         }
 
@@ -442,22 +442,22 @@ final class TranscriptionEngine {
 
     private func checkMicrophoneAuthorization() async -> Bool {
         let audioStatus = AVCaptureDevice.authorizationStatus(for: .audio)
-        print("[TranscriptionEngine] Microphone auth status: \(audioStatus.rawValue) (0=notDetermined, 1=restricted, 2=denied, 3=authorized)")
+        Log.dictation.error("Microphone auth status: \(audioStatus.rawValue, privacy: .public) (0=notDetermined, 1=restricted, 2=denied, 3=authorized)")
 
         switch audioStatus {
         case .authorized:
-            print("[TranscriptionEngine] Microphone already authorized")
+            Log.dictation.notice("Microphone already authorized")
             return true
         case .notDetermined:
-            print("[TranscriptionEngine] Requesting microphone access...")
+            Log.dictation.notice("Requesting microphone access...")
             let granted = await AVCaptureDevice.requestAccess(for: .audio)
-            print("[TranscriptionEngine] Microphone access granted: \(granted)")
+            Log.dictation.notice("Microphone access granted: \(granted, privacy: .public)")
             if !granted {
                 error = .notAuthorized
             }
             return granted
         case .denied, .restricted:
-            print("[TranscriptionEngine] Microphone access denied or restricted")
+            Log.dictation.error("Microphone access denied or restricted")
             error = .notAuthorized
             return false
         @unknown default:
@@ -495,7 +495,7 @@ final class TranscriptionEngine {
     // MARK: - Speech Recognition Setup
 
     private func setupSpeechRecognition(contextualStrings: [String] = []) async throws {
-        print("[TranscriptionEngine] Setting up speech recognition...")
+        Log.dictation.notice("Setting up speech recognition...")
 
         // Resolved before the transcriber is built, not after: a transcriber is bound to
         // the locale it is created with, so choosing one afterwards changes nothing.
@@ -540,10 +540,10 @@ final class TranscriptionEngine {
             context.contextualStrings[.general] = hints
             do {
                 try await speechAnalyzer?.setContext(context)
-                print("[TranscriptionEngine] Applied \(hints.count) vocabulary hints")
+                Log.dictation.notice("Applied \(hints.count, privacy: .public) vocabulary hints")
             } catch {
                 // Worth continuing without: hints improve accuracy, they are not required.
-                print("[TranscriptionEngine] Could not apply vocabulary hints: \(error)")
+                Log.dictation.error("Could not apply vocabulary hints: \(error, privacy: .public)")
             }
         }
 
@@ -602,7 +602,7 @@ final class TranscriptionEngine {
 
         // Start analyzer
         try await speechAnalyzer?.start(inputSequence: inputStream)
-        print("[TranscriptionEngine] Speech recognition setup complete")
+        Log.dictation.notice("Speech recognition setup complete")
     }
 
     /// Split a finalized result into runs carrying an audio time range.
@@ -641,11 +641,11 @@ final class TranscriptionEngine {
     }
 
     private func ensureModelAvailable(transcriber: SpeechTranscriber, locale: Locale) async throws {
-        print("[TranscriptionEngine] Ensuring model is available...")
+        Log.dictation.notice("Ensuring model is available...")
 
         // Check if download is needed
         if let downloader = try await AssetInventory.assetInstallationRequest(supporting: [transcriber]) {
-            print("[TranscriptionEngine] Downloading speech model...")
+            Log.dictation.notice("Downloading speech model...")
             try await downloader.downloadAndInstall()
         }
 
@@ -655,7 +655,7 @@ final class TranscriptionEngine {
             try await AssetInventory.reserve(locale: locale)
         }
 
-        print("[TranscriptionEngine] Using locale: \(locale.identifier)")
+        Log.dictation.notice("Using locale: \(locale.identifier, privacy: .public)")
     }
 
     // MARK: - Cleanup
@@ -688,7 +688,7 @@ final class TranscriptionEngine {
 
     deinit {
         MainActor.assumeIsolated {
-            print("[TranscriptionEngine] Deallocating...")
+            Log.dictation.notice("Deallocating...")
             recognitionTask?.cancel()
             audioProcessingTask?.cancel()
             audioCaptureHelper?.stopCapture()

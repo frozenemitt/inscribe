@@ -1,4 +1,5 @@
 import AVFoundation
+import os
 import Foundation
 
 #if os(macOS)
@@ -19,14 +20,14 @@ final class AudioCaptureHelper: @unchecked Sendable {
     /// - Parameter preferredDeviceUID: CoreAudio UID of the microphone to record from,
     ///   or "default" to follow the system setting.
     func startCapture(preferredDeviceUID: String = "default") throws -> AsyncStream<AudioData> {
-        print("[AudioCaptureHelper] Starting capture...")
+        Log.audio.notice("Starting capture...")
 
         #if os(iOS)
         // Setup iOS audio session
         let audioSession = AVAudioSession.sharedInstance()
         try audioSession.setCategory(.record, mode: .measurement, options: .duckOthers)
         try audioSession.setActive(true, options: .notifyOthersOnDeactivation)
-        print("[AudioCaptureHelper] iOS audio session configured")
+        Log.audio.notice("iOS audio session configured")
         #endif
 
         // Create fresh engine
@@ -46,13 +47,13 @@ final class AudioCaptureHelper: @unchecked Sendable {
 
         let format = inputNode.outputFormat(forBus: 0)
 
-        print("[AudioCaptureHelper] Input format: \(format)")
+        Log.audio.notice("Input format: \(format, privacy: .public)")
 
         // A denied microphone does not raise an error here; the input node simply
         // reports a zero sample rate. Saying so beats "invalid format", which sends
         // the user looking at audio settings rather than at privacy settings.
         guard format.sampleRate > 0 && format.channelCount > 0 else {
-            print("[AudioCaptureHelper] Input format is \(format) — microphone access is probably denied")
+            Log.audio.error("Input format is \(format, privacy: .public) — microphone access is probably denied")
             throw AudioCaptureError.microphoneUnavailable
         }
 
@@ -72,18 +73,18 @@ final class AudioCaptureHelper: @unchecked Sendable {
         ) { [weak self] buffer, time in
             tapCount += 1
             if tapCount <= 5 {
-                print("[AudioCaptureHelper] Tap callback #\(tapCount), frames: \(buffer.frameLength)")
+                Log.audio.notice("Tap callback #\(tapCount, privacy: .public), frames: \(buffer.frameLength, privacy: .public)")
             }
             let audioData = AudioData(buffer: buffer, time: time)
             self?.outputContinuation?.yield(audioData)
         }
-        print("[AudioCaptureHelper] Tap installed")
+        Log.audio.notice("Tap installed")
 
         // Start engine
         engine.prepare()
         try engine.start()
         isRunning = engine.isRunning
-        print("[AudioCaptureHelper] Engine started, running: \(isRunning)")
+        Log.audio.notice("Engine started, running: \(self.isRunning, privacy: .public)")
 
         return stream
     }
@@ -99,13 +100,13 @@ final class AudioCaptureHelper: @unchecked Sendable {
         // Resolved by UID rather than looked up in the device list: the meeting input
         // is a private aggregate, which deliberately does not appear there.
         guard let resolvedID = AudioDeviceCatalog.resolveDeviceID(uid: uid) else {
-            print("[AudioCaptureHelper] Device \(uid) not connected, using system default")
+            Log.audio.notice("Device \(uid, privacy: .public) not connected, using system default")
             return
         }
         let deviceName = AudioDeviceCatalog.device(forUID: uid)?.name ?? uid
 
         guard let audioUnit = inputNode.audioUnit else {
-            print("[AudioCaptureHelper] No audio unit on the input node")
+            Log.audio.notice("No audio unit on the input node")
             return
         }
 
@@ -120,19 +121,19 @@ final class AudioCaptureHelper: @unchecked Sendable {
         )
 
         if status == noErr {
-            print("[AudioCaptureHelper] Recording from \(deviceName)")
+            Log.audio.notice("Recording from \(deviceName, privacy: .public)")
         } else {
-            print("[AudioCaptureHelper] Could not select \(deviceName), OSStatus \(status)")
+            Log.audio.error("Could not select \(deviceName, privacy: .public), OSStatus \(status, privacy: .public)")
         }
     }
     #endif
 
     /// Stop capturing audio
     func stopCapture() {
-        print("[AudioCaptureHelper] Stopping capture...")
+        Log.audio.notice("Stopping capture...")
 
         guard let engine = audioEngine else {
-            print("[AudioCaptureHelper] No engine to stop")
+            Log.audio.notice("No engine to stop")
             return
         }
 
@@ -144,9 +145,9 @@ final class AudioCaptureHelper: @unchecked Sendable {
         #if os(iOS)
         do {
             try AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
-            print("[AudioCaptureHelper] iOS audio session deactivated")
+            Log.audio.notice("iOS audio session deactivated")
         } catch {
-            print("[AudioCaptureHelper] Warning: Failed to deactivate audio session: \(error)")
+            Log.audio.error("Warning: Failed to deactivate audio session: \(error, privacy: .public)")
         }
         #endif
 
@@ -155,7 +156,7 @@ final class AudioCaptureHelper: @unchecked Sendable {
         audioEngine = nil
         isRunning = false
 
-        print("[AudioCaptureHelper] Capture stopped")
+        Log.audio.notice("Capture stopped")
     }
 
     deinit {
@@ -163,7 +164,7 @@ final class AudioCaptureHelper: @unchecked Sendable {
         // AVAudioEngine.stop() blocks and deinit runs on whichever thread drops the
         // last reference — which was once the main thread, mid-hotkey.
         if audioEngine != nil {
-            print("[AudioCaptureHelper] deinit found a live engine — teardown was missed")
+            Log.audio.error("deinit found a live engine — teardown was missed")
             stopCapture()
         }
     }

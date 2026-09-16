@@ -1,4 +1,5 @@
 import AppIntents
+import os
 import SwiftData
 import Foundation
 
@@ -103,7 +104,7 @@ struct QuickTranscribeIntent: AppIntent {
                     do {
                         finalText = try await aiProcessor.process(text: transcription, promptId: prompt.id)
                     } catch {
-                        print("[QuickTranscribeIntent] AI processing failed, using raw transcript: \(error)")
+                        Log.intents.error("AI processing failed, using raw transcript: \(error, privacy: .public)")
                         finalText = transcription
                         aiFailureReason = "AI processing failed."
                     }
@@ -111,7 +112,7 @@ struct QuickTranscribeIntent: AppIntent {
                     // A name matching no prompt is a typo in the shortcut. Reported
                     // rather than thrown: the recording is already spent, and the
                     // transcript is still worth handing back.
-                    print("[QuickTranscribeIntent] No prompt named '\(promptName)'")
+                    Log.intents.notice("No prompt named '\(promptName)'")
                     aiFailureReason = "No prompt is named \"\(promptName)\"."
                 }
             }
@@ -245,7 +246,7 @@ struct RecordTranscriptionIntent: AppIntent {
                     finalText = try await aiProcessor.quickProcess(text: transcription, action: action.toQuickAction)
                     dialogPrefix = action.rawValue
                 } catch {
-                    print("[RecordTranscriptionIntent] AI processing failed, using raw transcript: \(error)")
+                    Log.intents.error("AI processing failed, using raw transcript: \(error, privacy: .public)")
                     finalText = transcription
                     aiProcessingFailed = true
                 }
