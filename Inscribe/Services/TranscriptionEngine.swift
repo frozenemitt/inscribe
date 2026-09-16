@@ -48,6 +48,13 @@ final class TranscriptionEngine {
     /// down the meeting's session while the meeting UI carries on as if recording.
     private(set) var owner: SessionOwner?
 
+    /// How loud the microphone is right now, 0 to 1.
+    ///
+    /// Read by the dictation overlay so its band moves with the voice. Taken from the
+    /// buffers already on their way to the analyzer, so nothing opens the microphone
+    /// a second time.
+    private(set) var inputLevel: Double = 0
+
     private(set) var currentTranscript = ""
     private(set) var volatileText = ""  // Live, unconfirmed text
     private(set) var error: TranscriptionEngineError?
@@ -178,6 +185,7 @@ final class TranscriptionEngine {
         currentTranscript = ""
         volatileText = ""
         timedSegments = []
+        inputLevel = 0
 
         // Check authorization
         guard await checkAuthorization() else {
@@ -219,7 +227,7 @@ final class TranscriptionEngine {
 
         let tap = audioTap
 
-        audioProcessingTask = Task.detached(priority: .userInitiated) {
+        audioProcessingTask = Task.detached(priority: .userInitiated) { [weak self] in
             let converter = BufferConverter()
             var bufferCount = 0
 
@@ -229,6 +237,9 @@ final class TranscriptionEngine {
                 // Hand the untouched buffer to any second consumer before conversion,
                 // so diarization sees the same audio the transcriber does.
                 tap?(audioData.buffer)
+
+                let level = Self.level(of: audioData.buffer)
+                await MainActor.run { self?.applyLevel(level) }
 
                 do {
                     let converted = try converter.convertBuffer(audioData.buffer, to: targetFormat)
@@ -313,8 +324,35 @@ final class TranscriptionEngine {
 
         release()
 
+        inputLevel = 0
         Self.log.notice("recording stopped, delivering \(self.currentTranscript.count, privacy: .public) chars")
         return currentTranscript
+    }
+
+    /// Fold a new reading into the level, fast to rise and slow to fall.
+    ///
+    /// A bar following raw loudness flickers, because speech is full of gaps between
+    /// syllables. Rising immediately and falling gently tracks the voice rather than
+    /// the waveform.
+    private func applyLevel(_ reading: Double) {
+        inputLevel = reading > inputLevel
+            ? inputLevel + (reading - inputLevel) * 0.6
+            : inputLevel + (reading - inputLevel) * 0.12
+    }
+
+    /// Loudness of one buffer, as 0 to 1 across a 60 dB range.
+    private nonisolated static func level(of buffer: AVAudioPCMBuffer) -> Double {
+        guard let samples = buffer.floatChannelData?[0], buffer.frameLength > 0 else { return 0 }
+
+        var sum: Float = 0
+        for i in 0..<Int(buffer.frameLength) {
+            sum += samples[i] * samples[i]
+        }
+        let rms = (sum / Float(buffer.frameLength)).squareRoot()
+        guard rms > 0 else { return 0 }
+
+        let decibels = 20 * log10(Double(rms))
+        return min(max((decibels + 60) / 60, 0), 1)
     }
 
     /// Hand the engine back.
@@ -344,6 +382,7 @@ final class TranscriptionEngine {
 
         currentTranscript = ""
         volatileText = ""
+        inputLevel = 0
     }
 
     // MARK: - Authorization

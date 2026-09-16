@@ -427,7 +427,10 @@ final class RecordingCoordinator {
         overlayTicker = Task { [weak self] in
             while !Task.isCancelled {
                 guard let self, self.isRecording else { return }
-                self.overlay.update(text: self.engine.currentTranscript + self.engine.volatileText)
+                self.overlay.update(
+                    text: self.engine.currentTranscript + self.engine.volatileText,
+                    level: self.engine.inputLevel
+                )
                 try? await Task.sleep(for: .milliseconds(120))
             }
         }

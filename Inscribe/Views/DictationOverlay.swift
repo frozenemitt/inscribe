@@ -53,8 +53,9 @@ final class DictationOverlayController {
         panel?.orderFrontRegardless()
     }
 
-    func update(text: String) {
+    func update(text: String, level: Double) {
         model.text = text
+        model.level = level
         growToFit()
     }
 
@@ -216,6 +217,9 @@ final class OverlayModel {
     var isProcessing = false
     var opacity: Double = 0.75
 
+    /// Microphone loudness, 0 to 1, driving the band at the top.
+    var level: Double = 0
+
     /// How tall the text may grow before older lines are pushed off the top. Set from
     /// the room left between the panel's bottom edge and the top of its screen.
     var maxTextHeight: CGFloat = DictationOverlayView.lineHeight * 5
@@ -235,7 +239,7 @@ private struct DictationOverlayView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            ListeningBar(isProcessing: model.isProcessing)
+            ListeningBar(level: model.level, isProcessing: model.isProcessing)
 
             // Clipped to the newest lines rather than truncated.
             //
@@ -275,34 +279,56 @@ private struct DictationOverlayView: View {
     }
 }
 
-/// A thin band of moving colour across the top of the panel.
+/// A band of moving colour across the top of the panel that rises with your voice.
 ///
 /// It replaced an icon beside the text, which took a quarter of the width and made
-/// every line wrap sooner — so the panel grew taller to say the same thing. A band
-/// above the words costs four points of height and gives the text the full width.
+/// every line wrap sooner — so the panel grew taller to say the same thing. This sits
+/// above the words and leaves them the full width.
+///
+/// The bars are driven by the microphone's own loudness rather than a timer, so a
+/// silent room is a flat line. That is the question the panel exists to answer: is it
+/// hearing me.
 private struct ListeningBar: View {
+    let level: Double
     let isProcessing: Bool
+
+    private static let barCount = 48
+    private static let height: CGFloat = 18
 
     /// Seconds for the colour to travel the width once.
     private let period: TimeInterval = 2.4
 
     var body: some View {
         TimelineView(.animation) { context in
-            let phase = CGFloat(
-                context.date.timeIntervalSinceReferenceDate
-                    .truncatingRemainder(dividingBy: period) / period
-            )
+            let time = context.date.timeIntervalSinceReferenceDate
+            let phase = CGFloat(time.truncatingRemainder(dividingBy: period) / period)
 
-            Capsule()
-                .fill(
-                    LinearGradient(
-                        colors: colors,
-                        startPoint: UnitPoint(x: phase * 2 - 0.8, y: 0.5),
-                        endPoint: UnitPoint(x: phase * 2 + 0.2, y: 0.5)
-                    )
-                )
-                .frame(height: 4)
+            LinearGradient(
+                colors: colors,
+                startPoint: UnitPoint(x: phase * 2 - 0.8, y: 0.5),
+                endPoint: UnitPoint(x: phase * 2 + 0.2, y: 0.5)
+            )
+            .frame(height: Self.height)
+            // The colour is one sheet; the bars cut the shape out of it, so every bar
+            // carries the part of the gradient it is standing in.
+            .mask {
+                HStack(alignment: .center, spacing: 2) {
+                    ForEach(0..<Self.barCount, id: \.self) { index in
+                        Capsule()
+                            .frame(height: barHeight(index: index, time: time))
+                    }
+                }
+            }
         }
+        .frame(height: Self.height)
+    }
+
+    /// Each bar rides its own slow wave, so the band ripples rather than pumping as
+    /// one block. Amplitude is the voice; the wave only decides the shape.
+    private func barHeight(index: Int, time: TimeInterval) -> CGFloat {
+        let ripple = sin(time * 3.2 + Double(index) * 0.45) * 0.35 + 0.65
+        let amplitude = isProcessing ? 0.55 : level
+        return 2 + Self.height * 0.9 * CGFloat(amplitude * ripple)
     }
 
     private var colors: [Color] {
