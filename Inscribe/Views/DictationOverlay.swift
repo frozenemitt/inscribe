@@ -188,8 +188,13 @@ final class DictationOverlayController {
         // what hides the refraction. Clear blurs far less and lets the edge bend what
         // is behind it, which is the part that reads as glass rather than as fog.
         glass.style = .clear
-        glass.cornerRadius = 16
-        glass.tintColor = NSColor.black.withAlphaComponent(0.38)
+        // Refraction in Liquid Glass lives in the rim, not the interior, so a curve
+        // this gentle put almost none of the panel inside it. A larger radius gives
+        // the effect somewhere to happen.
+        glass.cornerRadius = 26
+        // A heavy tint darkens the rim along with everything else, and the rim is the
+        // part worth seeing.
+        glass.tintColor = NSColor.black.withAlphaComponent(0.22)
         glass.contentView = hosting
 
         let container = DragHandleView()
@@ -307,10 +312,28 @@ private struct DictationOverlayView: View {
         .padding(.vertical, DictationOverlayController.verticalPadding / 2)
         .frame(width: DictationOverlayController.width)
         .frame(minHeight: DictationOverlayController.minimumHeight)
-        // No background here. The glass is an NSGlassEffectView behind this view,
-        // because SwiftUI's own glass had nothing to refract: inside a borderless
-        // transparent panel it never sampled the windows behind the panel, and read
-        // as a thin sheet of plastic.
+        // No background here. The glass is an NSGlassEffectView behind this view.
+        //
+        // The rim is drawn rather than sampled: a light edge, brightest where a light
+        // above and to the left would catch it, fading around the curve. That is the
+        // specular highlight the material renders faintly on a shape this large, and
+        // drawing it is the honest way to get the read at this size.
+        .overlay(
+            RoundedRectangle(cornerRadius: 26)
+                .strokeBorder(
+                    LinearGradient(
+                        colors: [
+                            .white.opacity(0.55),
+                            .white.opacity(0.12),
+                            .white.opacity(0.04),
+                            .white.opacity(0.18)
+                        ],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    ),
+                    lineWidth: 1
+                )
+        )
         // Rendered dark throughout, so the text comes out light and the glass picks
         // its dark treatment, rather than each part being told separately.
         .environment(\.colorScheme, .dark)
