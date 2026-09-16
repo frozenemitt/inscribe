@@ -153,23 +153,12 @@ final class GlobalHotkeyMonitor {
 
     @ObservationIgnored nonisolated(unsafe) private var pump: Task<Void, Never>?
 
-    /// A release waiting to be believed. See `perform`.
-    private var pendingRelease: Task<Void, Never>?
+    /// When the last release was acted on, so a press hard on its heels can be named
+    /// for what it is.
+    private var lastRelease: ContinuousClock.Instant?
 
-    /// When the last toggle was acted on, so chatter cannot fire a second one.
-    private var lastToggle: ContinuousClock.Instant?
-
-    /// How many chattered releases have been ignored since the app started.
-    private var chatterSuppressed = 0
-
-    /// How long a release has to stand before it counts.
-    ///
-    /// The Globe key chatters while held: the system sends a release and another press
-    /// about every hundred and twenty milliseconds, which is indistinguishable from a
-    /// real tap except that a real one is not followed by a press. Every one of those
-    /// ended the recording, and since bringing a recording up takes about as long as
-    /// the gap, dictation stopped working at all rather than merely stuttering.
-    private static let releaseGrace: Duration = .milliseconds(250)
+    /// A press this soon after a release did not come from a human hand.
+    private static let chatterWindow: Duration = .milliseconds(250)
 
     // deinit is nonisolated and has to tear the tap down, so this carries the
     // isolation opt-out rather than the whole class.
@@ -398,35 +387,23 @@ final class GlobalHotkeyMonitor {
     private func perform(_ action: HotkeyAction) {
         switch action {
         case .activate:
-            // A press arriving while a release is still waiting means the release was
-            // chatter and the key never came up. Drop both: the recording is already
-            // running and must not be restarted.
-            if let pendingRelease {
-                pendingRelease.cancel()
-                self.pendingRelease = nil
-                chatterSuppressed += 1
-                // Rare by nature, and the only way to know whether the key is still
-                // doing this. A run of these while you hold the key is the fault; none
-                // of them means it has stopped.
-                Self.log.notice("ignored a release that was chatter (\(self.chatterSuppressed, privacy: .public) this run)")
-                return
+            // Named, not acted on. The Globe key spent part of one morning sending a
+            // release and another press every hundred and twenty milliseconds while
+            // held, which ended each recording as fast as it could start — and looked
+            // from outside exactly like the key doing nothing. Holding the release back
+            // to defend against it cost a quarter of a second on every dictation, for a
+            // fault that stopped on its own, so the defence is gone and only the
+            // reading of it remains.
+            if let lastRelease, ContinuousClock.now - lastRelease < Self.chatterWindow {
+                Self.log.error("a press followed a release within \(Self.chatterWindow, privacy: .public) — the Globe key is chattering")
             }
             onActivate?()
 
         case .deactivate:
-            pendingRelease?.cancel()
-            pendingRelease = Task { @MainActor [weak self] in
-                try? await Task.sleep(for: Self.releaseGrace)
-                guard !Task.isCancelled, let self else { return }
-                self.pendingRelease = nil
-                self.onDeactivate?()
-            }
+            lastRelease = .now
+            onDeactivate?()
 
         case .toggle:
-            // Same chatter, and in this mode each burst would flip the recording on and
-            // off several times a second.
-            if let lastToggle, ContinuousClock.now - lastToggle < Self.releaseGrace { return }
-            lastToggle = .now
             onToggle?()
         case .cancel: onCancel?()
         case .undo: onUndo?()
