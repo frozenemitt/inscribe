@@ -265,13 +265,24 @@ private struct DictationOverlayView: View {
         .frame(width: DictationOverlayController.width)
         .frame(minHeight: DictationOverlayController.minimumHeight)
         .background {
-            Color.clear
-                .glassEffect(.regular, in: RoundedRectangle(cornerRadius: 16))
-                .overlay(
-                    RoundedRectangle(cornerRadius: 16)
-                        .strokeBorder(Color.primary.opacity(0.08), lineWidth: 1)
-                )
+            ZStack {
+                Color.clear.glassEffect(.regular, in: RoundedRectangle(cornerRadius: 16))
+
+                // Dark whatever the system is set to, and whatever window it is
+                // floating over. Light emitted onto a pale surface has nothing to add
+                // to, so the ribbon simply disappeared in light mode. Siri's orb is
+                // dark glass for the same reason: the glow needs somewhere to burn.
+                RoundedRectangle(cornerRadius: 16)
+                    .fill(Color.black.opacity(0.55))
+            }
+            .overlay(
+                RoundedRectangle(cornerRadius: 16)
+                    .strokeBorder(Color.white.opacity(0.10), lineWidth: 1)
+            )
         }
+        // Rendered dark throughout, so the text comes out light and the glass picks
+        // its dark treatment, rather than each part being told separately.
+        .environment(\.colorScheme, .dark)
         // Text and glass fade together, so the whole panel recedes as one thing
         // rather than leaving words floating over nothing.
         .opacity(model.opacity)
@@ -305,8 +316,6 @@ private struct RibbonShape: Shape {
 /// The colours are the system's own blue, purple and pink, so they follow light and
 /// dark mode without being told to.
 private struct ListeningBar: View {
-    @Environment(\.colorScheme) private var colorScheme
-
     let spectrum: [Double]
     let isProcessing: Bool
 
@@ -323,15 +332,6 @@ private struct ListeningBar: View {
             let fill = LinearGradient(stops: stops, startPoint: .top, endPoint: .bottom)
 
             ZStack {
-                // A dark track under the ribbon, and the reason for it is not taste.
-                // Additive light can only brighten what is behind it, so on a pale
-                // window there was nothing to add to and the glow vanished. Giving
-                // the band its own darkness means it looks the same over any window,
-                // and the contrast is also where crispness comes from — Siri's glow
-                // sits on a darkened surface for both of these reasons.
-                Capsule()
-                    .fill(Color.black.opacity(colorScheme == .light ? 0.34 : 0.24))
-
                 // Two halos rather than one: a wide dim wash for falloff and a tight
                 // bright one at the edge. A single broad blur reads as haze; the pair
                 // reads as something burning.
@@ -348,7 +348,6 @@ private struct ListeningBar: View {
                 shape.fill(fill)
             }
             .compositingGroup()
-            .clipShape(Capsule())
             .frame(height: Self.height)
         }
         .frame(height: Self.height)
