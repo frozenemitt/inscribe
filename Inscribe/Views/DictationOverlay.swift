@@ -38,7 +38,6 @@ final class DictationOverlayController {
     func show() {
         model.text = ""
         model.isProcessing = false
-        model.opacity = settings.overlayOpacity
 
         if panel == nil {
             panel = makePanel()
@@ -53,6 +52,7 @@ final class DictationOverlayController {
         }
 
         position(panel)
+        applyOpacity()
         // orderFrontRegardless, not makeKeyAndOrderFront: taking key status would pull
         // focus out of the app being dictated into, which is where the text must land.
         panel?.orderFrontRegardless()
@@ -60,12 +60,26 @@ final class DictationOverlayController {
 
     func update(text: String, spectrum: [Double]) {
         model.spectrum = spectrum
+        applyOpacity()
 
         // Only when it changed: the band wants twenty updates a second, and laying out
         // a panel-tall block of text that often to say the same words is waste.
         guard model.text != text else { return }
         model.text = text
         growToFit()
+    }
+
+    /// Fade the whole panel, glass included.
+    ///
+    /// The setting used to fade the SwiftUI content, which worked while the glass was
+    /// drawn inside it. The glass is an AppKit view behind that content now, so fading
+    /// the content only made the words dim over a pane that stayed solid. The window's
+    /// own alpha takes everything with it.
+    private func applyOpacity() {
+        guard let panel else { return }
+        let wanted = settings.overlayOpacity
+        guard abs(panel.alphaValue - wanted) > 0.001 else { return }
+        panel.alphaValue = wanted
     }
 
     func showProcessing() {
@@ -244,8 +258,6 @@ private final class DragHandleView: NSView {
 final class OverlayModel {
     var text = ""
     var isProcessing = false
-    var opacity: Double = 0.75
-
     /// Loudness per frequency band, 0 to 1, low to high — one per bar.
     var spectrum: [Double] = []
 
@@ -302,9 +314,6 @@ private struct DictationOverlayView: View {
         // Rendered dark throughout, so the text comes out light and the glass picks
         // its dark treatment, rather than each part being told separately.
         .environment(\.colorScheme, .dark)
-        // Text and glass fade together, so the whole panel recedes as one thing
-        // rather than leaving words floating over nothing.
-        .opacity(model.opacity)
     }
 
     private var displayText: String {
