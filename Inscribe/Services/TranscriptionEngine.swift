@@ -291,17 +291,8 @@ final class TranscriptionEngine {
 
         // Stop audio capture helper. This finishes the audio stream, so the task
         // below runs out of buffers on its own.
-        // Temporary: where the time between key-up and text actually goes.
-        let stopBegan = ContinuousClock.now
-        func since(_ mark: ContinuousClock.Instant) -> Double {
-            let d = ContinuousClock.now - mark
-            return Double(d.components.seconds) + Double(d.components.attoseconds) / 1e18
-        }
-
         audioCaptureHelper?.stopCapture()
         audioCaptureHelper = nil
-        Log.dictation.notice("stopCapture \(since(stopBegan), format: .fixed(precision: 3), privacy: .public)s")
-        let afterCapture = ContinuousClock.now
 
         // Awaited rather than cancelled. An AsyncStream iterator throws away whatever
         // is still buffered when it is cancelled, and what is still buffered is
@@ -310,8 +301,6 @@ final class TranscriptionEngine {
         audioProcessingTask = nil
 
         // Finalize transcription
-        Log.dictation.notice("drain \(since(afterCapture), format: .fixed(precision: 3), privacy: .public)s")
-        let afterDrain = ContinuousClock.now
 
         analyzerInputContinuation?.finish()
 
@@ -335,15 +324,35 @@ final class TranscriptionEngine {
         //
         // A finalize that threw leaves no promise that the stream will end, so that one
         // case still cancels.
-        Log.dictation.notice("finalize \(since(afterDrain), format: .fixed(precision: 3), privacy: .public)s")
-        let afterFinalize = ContinuousClock.now
 
         if finalized {
-            _ = try? await recognitionTask?.value
+            // Bounded, because this is the one place a stall costs everything after
+            // it. The stream is supposed to end when finalization does; when it did
+            // not, this method never returned, the engine stayed in `.stopping`, and
+            // every later hotkey press was refused by the busy guard without a word.
+            // A dictation that ends a little short beats an app that stops answering.
+            let task = recognitionTask
+            let drained = await withTaskGroup(of: Bool.self) { group in
+                group.addTask {
+                    _ = try? await task?.value
+                    return true
+                }
+                group.addTask {
+                    try? await Task.sleep(for: .seconds(2))
+                    return false
+                }
+                let first = await group.next() ?? false
+                group.cancelAll()
+                return first
+            }
+
+            if !drained {
+                Self.log.error("results did not drain in 2s — cancelling, the tail may be short")
+                recognitionTask?.cancel()
+            }
         } else {
             recognitionTask?.cancel()
         }
-        Log.dictation.notice("results \(since(afterFinalize), format: .fixed(precision: 3), privacy: .public)s, total \(since(stopBegan), format: .fixed(precision: 3), privacy: .public)s")
 
         recognitionTask = nil
         teardownSession()
