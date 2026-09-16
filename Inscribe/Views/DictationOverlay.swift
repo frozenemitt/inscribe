@@ -283,6 +283,15 @@ private struct DictationOverlayView: View {
     }
 }
 
+/// The ribbon's outline, as a shape, so Liquid Glass can be cut to it.
+private struct RibbonShape: Shape {
+    let amplitudes: [Double]
+
+    func path(in rect: CGRect) -> Path {
+        ListeningBar.ribbon(amplitudes: amplitudes, in: rect.size)
+    }
+}
+
 /// A band of moving colour across the top of the panel showing your voice's spectrum.
 ///
 /// It replaced an icon beside the text, which took a quarter of the width and made
@@ -306,17 +315,19 @@ private struct ListeningBar: View {
         TimelineView(.animation) { context in
             let time = context.date.timeIntervalSinceReferenceDate
             let amplitudes = (0..<Self.pointCount).map { amplitude(index: $0, time: time) }
+            let shape = RibbonShape(amplitudes: amplitudes)
             let stops = isProcessing ? Self.processingStops : Self.voiceStops
 
-            Canvas { canvas, size in
-                canvas.fill(
-                    Self.ribbon(amplitudes: amplitudes, in: size),
-                    with: .linearGradient(
-                        Gradient(stops: stops),
-                        startPoint: CGPoint(x: size.width / 2, y: 0),
-                        endPoint: CGPoint(x: size.width / 2, y: size.height)
-                    )
+            ZStack {
+                shape.fill(
+                    LinearGradient(stops: stops, startPoint: .top, endPoint: .bottom)
                 )
+
+                // The same Liquid Glass the panel is made of, cut to the ribbon.
+                // `glassEffect` takes any shape, not just a rounded rectangle, so the
+                // ribbon gets the real thing — the specular edge and the refraction of
+                // what is behind it — rather than a colour pretending to be lit.
+                Color.clear.glassEffect(.regular, in: shape)
             }
             .frame(height: Self.height)
         }
@@ -328,7 +339,7 @@ private struct ListeningBar: View {
     /// Forty-eight separate bars read as a meter however they were coloured, and
     /// blurring them only made a blurry meter. A single curve carries the same numbers
     /// and reads as one moving thing, which is what the panel is trying to be.
-    private static func ribbon(amplitudes: [Double], in size: CGSize) -> Path {
+    fileprivate static func ribbon(amplitudes: [Double], in size: CGSize) -> Path {
         guard amplitudes.count > 1 else { return Path() }
 
         let middle = size.height / 2
@@ -352,7 +363,7 @@ private struct ListeningBar: View {
     }
 
     /// Curve through the points rather than joining them, so the shape has no corners.
-    private static func append(_ points: [CGPoint], to path: inout Path, starting: Bool) {
+    fileprivate static func append(_ points: [CGPoint], to path: inout Path, starting: Bool) {
         guard let first = points.first, let last = points.last else { return }
 
         if starting {
@@ -389,12 +400,13 @@ private struct ListeningBar: View {
     /// so it is the same colour where it meets zero however thick it is. The ends fade
     /// rather than stopping, so the edges dissolve instead of being cut off.
     ///
-    /// Deliberately undersaturated. The system pink and purple are tuned to carry
-    /// meaning at the size of a button; spread across a moving shape they shout, and
-    /// the shouting is what read as unfinished rather than the shape itself.
-    private static let azure = Color(red: 0.36, green: 0.55, blue: 0.86)
-    private static let indigo = Color(red: 0.51, green: 0.47, blue: 0.80)
-    private static let lavender = Color(red: 0.70, green: 0.56, blue: 0.80)
+    /// Carried under the glass rather than in front of it, so it needs more colour
+    /// than a flat fill would: the glass mutes what is behind it and hands back the
+    /// shine. The system pink is still gone — it shouted at this size — but a
+    /// washed-out ramp under glass only reads as grey.
+    private static let azure = Color(red: 0.24, green: 0.52, blue: 0.96)
+    private static let indigo = Color(red: 0.42, green: 0.40, blue: 0.92)
+    private static let lavender = Color(red: 0.70, green: 0.46, blue: 0.94)
 
     private static let voiceStops: [Gradient.Stop] = [
         .init(color: lavender.opacity(0.35), location: 0.0),
