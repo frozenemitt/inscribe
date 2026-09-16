@@ -292,9 +292,10 @@ private struct DictationOverlayView: View {
 /// Each bar is one slice of the frequency range, read off the microphone, so the band
 /// shows the shape of the voice rather than only its volume — and a silent room is a
 /// flat line. That is the question the panel exists to answer: is it hearing me.
+///
+/// The colours are the system's own blue, purple and pink, so they follow light and
+/// dark mode without being told to.
 private struct ListeningBar: View {
-    @Environment(\.colorScheme) private var colorScheme
-
     let spectrum: [Double]
     let isProcessing: Bool
 
@@ -308,9 +309,17 @@ private struct ListeningBar: View {
             HStack(alignment: .center, spacing: 2) {
                 ForEach(0..<Self.barCount, id: \.self) { index in
                     let amplitude = amplitude(index: index, time: time)
-                    Capsule()
-                        .fill(color(for: amplitude))
-                        .frame(height: 2 + Self.height * 0.9 * CGFloat(amplitude))
+
+                    // The gradient is anchored to the band, not to the bar, and the
+                    // bar is a window onto it. So every bar shows the same colour at
+                    // the centre line, and only a tall one reaches the vivid ends —
+                    // which makes the colour say the same thing the height does.
+                    gradient
+                        .frame(height: Self.height)
+                        .mask {
+                            Capsule()
+                                .frame(height: 2 + Self.height * 0.9 * CGFloat(amplitude))
+                        }
                 }
             }
             .frame(height: Self.height)
@@ -331,28 +340,31 @@ private struct ListeningBar: View {
         return index < spectrum.count ? Self.curve(spectrum[index]) : 0
     }
 
-    /// Colour is the bar's own height, so the band reads as a contour rather than a
-    /// pattern moving across it.
-    ///
-    /// A gradient travelling on a timer competed with the spectrum for attention: two
-    /// things moving, only one of them meaning anything. Hue runs from blue-violet at
-    /// the floor down through green and amber to red at the peak, and saturation and
-    /// brightness rise with it, so a loud band is both hotter and more vivid.
-    private func color(for amplitude: Double) -> Color {
-        if isProcessing {
-            return Color(hue: 0.09, saturation: 0.85, brightness: 0.95)
-        }
-
-        let level = min(max(amplitude, 0), 1)
-        return Color(
-            hue: 0.70 - 0.70 * level,
-            saturation: 0.55 + 0.45 * level,
-            // Held a little darker on a light background, where a pale violet at the
-            // floor disappears into the glass behind it.
-            brightness: (colorScheme == .light ? 0.50 : 0.62) + 0.38 * level,
-            opacity: 0.55 + 0.45 * level
+    private var gradient: LinearGradient {
+        LinearGradient(
+            stops: isProcessing ? Self.processingStops : Self.voiceStops,
+            startPoint: .top,
+            endPoint: .bottom
         )
     }
+
+    /// Blue through the middle, out through purple to pink at the extremes.
+    ///
+    /// Symmetric, because the bars grow from the centre line in both directions, so a
+    /// bar of any height is the same colour where it meets zero.
+    private static let voiceStops: [Gradient.Stop] = [
+        .init(color: .pink, location: 0.0),
+        .init(color: .purple, location: 0.26),
+        .init(color: .blue.opacity(0.9), location: 0.5),
+        .init(color: .purple, location: 0.74),
+        .init(color: .pink, location: 1.0)
+    ]
+
+    private static let processingStops: [Gradient.Stop] = [
+        .init(color: .yellow, location: 0.0),
+        .init(color: .orange, location: 0.5),
+        .init(color: .yellow, location: 1.0)
+    ]
 
     /// Spread the quiet end of the range and compress the loud one.
     ///
