@@ -32,15 +32,30 @@ struct ListeningBar: View {
     private static let height: CGFloat = DictationOverlayController.bandHeight
 
     var body: some View {
-        // Thirty a second, not display refresh. The spectrum behind it only changes
-        // twenty-three times a second, so anything faster redraws the same picture —
-        // and on a meeting's panel that goes on for the length of the meeting.
-        TimelineView(.periodic(from: .now, by: 1.0 / 30.0)) { context in
-            let time = context.date.timeIntervalSinceReferenceDate
+        // No clock while listening. The amplitudes come from an observed property, so
+        // the view redraws exactly when the spectrum changes and at no other time:
+        // twenty-three frames a second, none of them repeats, and each one carries the
+        // newest reading the moment it exists. A timer could only draw the same picture
+        // twice or draw the newest one late.
+        //
+        // The AI pass has no audio to show, so its shape moves on a clock instead.
+        if isProcessing {
+            TimelineView(.periodic(from: .now, by: 1.0 / 30.0)) { context in
+                ribbonView(at: context.date)
+            }
+            .frame(height: Self.height)
+        } else {
+            ribbonView(at: .distantPast)
+                .frame(height: Self.height)
+        }
+    }
+
+    private func ribbonView(at date: Date) -> some View {
+        Group {
+            let time = date.timeIntervalSinceReferenceDate
             let amplitudes = (0..<Self.pointCount).map { amplitude(index: $0, time: time) }
             let shape = RibbonShape(amplitudes: amplitudes)
             let stops = isProcessing ? Self.processingStops : Self.voiceStops
-
             let fill = LinearGradient(stops: stops, startPoint: .top, endPoint: .bottom)
 
             ZStack {
