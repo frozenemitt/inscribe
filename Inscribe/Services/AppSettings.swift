@@ -156,6 +156,20 @@ final class AppSettings {
         didSet { save("overlayOriginY", overlayOriginY) }
     }
 
+    /// Where the user dragged the meeting indicator, if they ever did.
+    var meetingIndicatorOriginX: Double? {
+        didSet { save("meetingIndicatorOriginX", meetingIndicatorOriginX) }
+    }
+
+    var meetingIndicatorOriginY: Double? {
+        didSet { save("meetingIndicatorOriginY", meetingIndicatorOriginY) }
+    }
+
+    /// Float a small panel showing the microphone while a meeting records.
+    var showMeetingIndicator: Bool {
+        didSet { save("showMeetingIndicator", showMeetingIndicator) }
+    }
+
     /// Use the Globe / Fn key on its own instead of the key combination below.
     var useGlobeKey: Bool {
         didSet { save("useGlobeKey", useGlobeKey) }
@@ -250,6 +264,9 @@ final class AppSettings {
         self.overlayOpacity = UserDefaults.standard.object(forKey: "overlayOpacity") as? Double ?? 0.75
         self.overlayOriginX = UserDefaults.standard.object(forKey: "overlayOriginX") as? Double
         self.overlayOriginY = UserDefaults.standard.object(forKey: "overlayOriginY") as? Double
+        self.meetingIndicatorOriginX = UserDefaults.standard.object(forKey: "meetingIndicatorOriginX") as? Double
+        self.meetingIndicatorOriginY = UserDefaults.standard.object(forKey: "meetingIndicatorOriginY") as? Double
+        self.showMeetingIndicator = UserDefaults.standard.object(forKey: "showMeetingIndicator") as? Bool ?? true
         self.useShiftReturnAfterInsert = UserDefaults.standard.object(forKey: "useShiftReturnAfterInsert") as? Bool ?? false
         self.maxRecordingSeconds = UserDefaults.standard.object(forKey: "maxRecordingSeconds") as? Int ?? 600
         self.wordReplacements = UserDefaults.standard.dictionary(forKey: "wordReplacements") as? [String: String] ?? [:]
@@ -341,6 +358,9 @@ final class AppSettings {
         overlayOpacity = 0.75
         overlayOriginX = nil
         overlayOriginY = nil
+        meetingIndicatorOriginX = nil
+        meetingIndicatorOriginY = nil
+        showMeetingIndicator = true
         useShiftReturnAfterInsert = false
         maxRecordingSeconds = 600
         wordReplacements = [:]

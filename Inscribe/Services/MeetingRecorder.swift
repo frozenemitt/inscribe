@@ -35,6 +35,14 @@ final class MeetingRecorder {
 
     // MARK: - Observable State
 
+    #if os(macOS)
+    /// The small panel that shows the microphone is still hearing the room.
+    private let indicator: MeetingIndicatorController
+
+    /// Feeds it while a meeting runs.
+    private var indicatorTicker: Task<Void, Never>?
+    #endif
+
     private(set) var state: State = .idle
     private(set) var activeMeeting: Meeting?
     private(set) var lastError: String?
@@ -99,6 +107,12 @@ final class MeetingRecorder {
         return accumulatedTranscript + " " + current
     }
 
+    /// Audio captured so far, including earlier segments of a paused meeting.
+    var recordedSeconds: TimeInterval {
+        guard state == .recording, let sessionStartedAt else { return completedAudioSeconds }
+        return completedAudioSeconds + Date().timeIntervalSince(sessionStartedAt)
+    }
+
     var isRecording: Bool { state == .recording }
     var isPaused: Bool { state == .paused }
 
@@ -115,7 +129,39 @@ final class MeetingRecorder {
         self.engine = engine
         self.settings = settings
         self.aiProcessor = aiProcessor
+        #if os(macOS)
+        self.indicator = MeetingIndicatorController(settings: settings)
+        #endif
     }
+
+    #if os(macOS)
+    /// Show the panel and keep it fed for as long as the meeting lasts.
+    ///
+    /// Twenty a second, like the dictation overlay: the band is drawn from the
+    /// microphone and anything slower reads as lag.
+    private func startIndicator() {
+        guard settings.showMeetingIndicator else { return }
+        indicatorTicker?.cancel()
+        indicator.show()
+        indicatorTicker = Task { @MainActor [weak self] in
+            while !Task.isCancelled {
+                guard let self, self.state != .idle else { return }
+                self.indicator.update(
+                    spectrum: self.engine.spectrum,
+                    seconds: self.recordedSeconds,
+                    isPaused: self.isPaused
+                )
+                try? await Task.sleep(for: .milliseconds(50))
+            }
+        }
+    }
+
+    private func stopIndicator() {
+        indicatorTicker?.cancel()
+        indicatorTicker = nil
+        indicator.hide()
+    }
+    #endif
 
     // MARK: - Recording
 
@@ -203,6 +249,9 @@ final class MeetingRecorder {
         sessionStartedAt = Date()
         activeMeeting = meeting
         state = .recording
+        #if os(macOS)
+        startIndicator()
+        #endif
         AudioFeedbackService.shared.playIfEnabled(.recordingStarted, settings: settings)
         print("[MeetingRecorder] Meeting started, diarization: \(diarizationActive)")
     }
@@ -449,6 +498,9 @@ final class MeetingRecorder {
         await teardown()
 
         state = .idle
+        #if os(macOS)
+        stopIndicator()
+        #endif
         activeMeeting = nil
         AudioFeedbackService.shared.playIfEnabled(.processingComplete, settings: settings)
 
