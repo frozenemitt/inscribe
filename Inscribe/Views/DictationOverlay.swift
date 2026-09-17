@@ -48,8 +48,21 @@ final class DictationOverlayController {
         model.text = ""
         model.isProcessing = false
 
-        if panel == nil {
-            panel = makePanel()
+        // A panel the window server has taken off the other desktops is thrown away
+        // and rebuilt, because it cannot be talked back onto them.
+        //
+        // Saying `collectionBehavior` again does nothing. AppKit compares the value it
+        // is handed against the one it already holds, finds them equal, and never
+        // passes anything to the window server — and the window server is the one that
+        // has forgotten. Measured on a panel stripped to a single desktop: assigning
+        // the same value left it on one of eight, and so did assigning a different one.
+        // A panel built a moment ago is on all eight.
+        //
+        // `isOnActiveSpace` is what tells a stranded panel from a healthy one. A panel
+        // on every desktop is on the active one whichever desktop that is, so false
+        // means this panel is somewhere the user is not.
+        if panel == nil || panel?.isOnActiveSpace == false {
+            replacePanel()
         }
 
         // Back to one line's worth, so each dictation grows from the same place.
@@ -59,16 +72,6 @@ final class DictationOverlayController {
             frame.size.height = Self.minimumHeight
             panel.setFrame(frame, display: false)
         }
-
-        // Said again on every dictation, not once when the panel was built.
-        //
-        // A panel found in the wild had lost it: the window server listed it on one
-        // desktop where a panel carrying the flag is listed on all of them. It was
-        // being drawn on that one desktop and was invisible on every other, and the
-        // only way back was to quit the app, because a relaunch builds a new panel.
-        // What takes the flag away is not known. Saying it again each time costs one
-        // assignment and removes the whole failure, whatever caused it.
-        panel?.collectionBehavior = Self.collectionBehavior
 
         position(panel)
         applyOpacity()
@@ -209,6 +212,7 @@ final class DictationOverlayController {
         // target, it never takes focus, and the alternative is a panel you cannot move.
         panel.ignoresMouseEvents = false
         panel.isMovableByWindowBackground = true
+        panel.collectionBehavior = Self.collectionBehavior
 
         // The SwiftUI content swallows the mouse, so `isMovableByWindowBackground`
         // never sees a click and the panel could not be dragged at all. This view sits
@@ -268,6 +272,21 @@ final class DictationOverlayController {
         }
 
         return panel
+    }
+
+    /// Drop the current panel and build another in its place.
+    ///
+    /// The old one is ordered out first so it does not linger on whatever desktop it
+    /// was stranded on, and its move observer goes with it: `makePanel` registers a
+    /// new one, and the old token would otherwise keep firing for a window nobody can
+    /// see.
+    private func replacePanel() {
+        panel?.orderOut(nil)
+        if let moveObserver {
+            NotificationCenter.default.removeObserver(moveObserver)
+            self.moveObserver = nil
+        }
+        panel = makePanel()
     }
 
     /// Where the user left it, or the bottom centre of the screen holding the pointer.
