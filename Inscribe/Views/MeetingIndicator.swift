@@ -41,14 +41,13 @@ final class MeetingIndicatorController {
     }
 
     func show() {
-        if panel == nil {
-            panel = makePanel()
+        // Same reasoning as the dictation panel: a panel the window server has taken
+        // off the other desktops is thrown away and rebuilt, because saying
+        // `collectionBehavior` again never reaches the window server.
+        if panel == nil || panel?.isOnActiveSpace == false {
+            replacePanel()
         }
-        // Said again at the start of every meeting, not once when the panel was built.
-        // Same reasoning as the dictation panel: a panel that has lost this is drawn on
-        // one desktop and is invisible on every other, and only quitting the app builds
-        // a new one.
-        panel?.collectionBehavior = Self.collectionBehavior
+        watchForStranding()
         position(panel)
         applyTint()
         panel?.orderFrontRegardless()
@@ -93,6 +92,7 @@ final class MeetingIndicatorController {
         panel.level = .floating
         panel.ignoresMouseEvents = false
         panel.isMovableByWindowBackground = true
+        panel.collectionBehavior = Self.collectionBehavior
 
         model.pauseOrResume = { [weak self] in self?.onPauseOrResume?() }
         model.stop = { [weak self] in self?.onStop?() }
@@ -134,25 +134,48 @@ final class MeetingIndicatorController {
             }
         }
 
-        // Said again whenever the user changes desktop.
-        //
-        // show() runs once per meeting, so a panel that lost its collection behaviour
-        // after the meeting began would stay on one desktop for the rest of the hour,
-        // which is the whole failure this panel exists to prevent. A desktop change is
-        // the only moment that costs anything and it happens a few times an hour. The
-        // window server applies the assignment within a frame, and the panel does not
-        // have to be reordered, so nothing blinks.
+        return panel
+    }
+
+    /// Drop the current panel and build another in its place.
+    ///
+    /// The old one is ordered out first so it does not linger on whatever desktop it
+    /// was stranded on, and its move observer goes with it: `makePanel` registers a
+    /// new one, and the old token would otherwise keep firing for a window nobody can
+    /// see.
+    private func replacePanel() {
+        panel?.orderOut(nil)
+        if let moveObserver {
+            NotificationCenter.default.removeObserver(moveObserver)
+            self.moveObserver = nil
+        }
+        panel = makePanel()
+    }
+
+    /// Replace the panel if a desktop change finds it stranded.
+    ///
+    /// show() runs once per meeting, so a panel taken off the other desktops after the
+    /// meeting began would stay off them for the rest of the hour, with nothing on
+    /// screen saying the microphone is still hearing anything. A desktop change is the
+    /// moment that reveals it: a panel on every desktop is on the one the user just
+    /// moved to, whichever that is, so `isOnActiveSpace` is false only for a panel
+    /// that has been stranded. A healthy panel is left alone and nothing blinks.
+    private func watchForStranding() {
+        guard spaceObserver == nil else { return }
         spaceObserver = NSWorkspace.shared.notificationCenter.addObserver(
             forName: NSWorkspace.activeSpaceDidChangeNotification,
             object: nil,
             queue: .main
         ) { [weak self] _ in
             MainActor.assumeIsolated {
-                self?.panel?.collectionBehavior = Self.collectionBehavior
+                guard let self, let panel = self.panel,
+                      panel.isVisible, !panel.isOnActiveSpace else { return }
+                self.replacePanel()
+                self.position(self.panel)
+                self.applyTint()
+                self.panel?.orderFrontRegardless()
             }
         }
-
-        return panel
     }
 
     /// Where the user left it, or the top right — out of the way of the thing the
