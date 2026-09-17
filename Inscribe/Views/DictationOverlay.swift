@@ -24,6 +24,8 @@ final class DictationOverlayController {
     private let settings: AppSettings
     /// Held so the panel's move notifications keep arriving for the life of the app.
     private var moveObserver: (any NSObjectProtocol)?
+    /// Held so the desktop-change notifications keep arriving for the life of the app.
+    private var spaceObserver: (any NSObjectProtocol)?
 
     /// Measured to size the panel: the glass view around it reports nothing useful.
 
@@ -64,6 +66,7 @@ final class DictationOverlayController {
         if panel == nil || panel?.isOnActiveSpace == false {
             replacePanel()
         }
+        watchForStranding()
 
         // Back to one line's worth, so each dictation grows from the same place.
         if let panel, panel.frame.height != Self.minimumHeight {
@@ -287,6 +290,40 @@ final class DictationOverlayController {
             self.moveObserver = nil
         }
         panel = makePanel()
+    }
+
+    /// Replace the panel if a desktop change finds it stranded.
+    ///
+    /// The panel has to follow the user across desktops mid-sentence: dictation often
+    /// starts in one place and lands in another, and a panel left behind takes the
+    /// words with it. A healthy panel follows on its own, being on every desktop
+    /// already. A stranded one never comes back, and the next dictation is too late to
+    /// be any use to the dictation that is running now.
+    ///
+    /// A panel on every desktop is on the one the user just moved to, whichever that
+    /// is, so `isOnActiveSpace` is false only for a panel that has been stranded. A
+    /// healthy panel is left alone and nothing blinks.
+    ///
+    /// The rebuilt panel is grown back to the text it was holding: the words live in
+    /// the model, not in the panel, but its height was measured into the old one.
+    private func watchForStranding() {
+        guard spaceObserver == nil else { return }
+        spaceObserver = NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.activeSpaceDidChangeNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self, let panel = self.panel,
+                      panel.isVisible, !panel.isOnActiveSpace else { return }
+                self.replacePanel()
+                self.position(self.panel)
+                self.applyOpacity()
+                self.applyContentOpacity()
+                self.growToFit()
+                self.panel?.orderFrontRegardless()
+            }
+        }
     }
 
     /// Where the user left it, or the bottom centre of the screen holding the pointer.
