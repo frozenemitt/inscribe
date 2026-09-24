@@ -82,7 +82,7 @@ struct Prompt: Identifiable, Codable, Equatable, Hashable {
     let id: UUID
     var name: String
     var systemPrompt: String
-    var userTemplate: String  // Use {text} as placeholder for transcribed text
+    var userTemplate: String  // Instructions for the AI; the transcript is appended after them automatically
     var isBuiltIn: Bool
     var isVisible: Bool
 
@@ -132,10 +132,16 @@ struct Prompt: Identifiable, Codable, Equatable, Hashable {
     }
 
     /// Apply the prompt template to transcribed text.
-    /// Wraps the transcription in <transcription> tags so the model can
-    /// clearly distinguish the instructions from the content to process.
+    ///
+    /// Wraps the transcription in <transcription> tags so the model can clearly
+    /// distinguish the instructions from the content to process. Older templates,
+    /// and the help text that used to sit next to this editor, asked for a literal
+    /// `{text}` placeholder; that substitution hasn't existed for a while, so any
+    /// leftover `{text}` is dropped rather than left sitting uselessly next to the
+    /// transcript that is now appended after it.
     func apply(to text: String) -> String {
-        let trimmed = userTemplate.trimmingCharacters(in: .whitespacesAndNewlines)
+        let withoutPlaceholder = userTemplate.replacingOccurrences(of: "{text}", with: "")
+        let trimmed = withoutPlaceholder.trimmingCharacters(in: .whitespacesAndNewlines)
         return "\(trimmed)\n\n<transcription>\n\(text)\n</transcription>"
     }
 
