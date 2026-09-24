@@ -158,7 +158,7 @@ struct Prompt: Identifiable, Codable, Equatable, Hashable {
         // the Settings slider was capped to that range could still hold a higher
         // value, so it is clamped here rather than trusted.
         return GenerationOptions(
-            sampling: sampling,
+            samplingMode: sampling,
             temperature: min(temperature, 1.0)
         )
     }

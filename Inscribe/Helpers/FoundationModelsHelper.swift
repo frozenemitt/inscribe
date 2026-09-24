@@ -95,43 +95,25 @@ class FoundationModelsHelper {
 
     /// Translate whatever the framework threw into our own error type.
     ///
-    /// The macOS 27 SDK throws the new top-level `LanguageModelError` for guardrail,
-    /// context-window and language failures; `LanguageModelSession.GenerationError`,
-    /// which used to be the only type for these, is deprecated but still exists and
-    /// is what the same failures threw through macOS 26. The app's minimum target is
-    /// macOS 26 while it is built against the macOS 27 SDK, so either type can arrive
-    /// depending on which OS the user is actually running — both are checked here
-    /// rather than trusting the SDK version this was compiled against.
+    /// The minimum target is macOS 27, where guardrail, context-window and language
+    /// failures throw the top-level `LanguageModelError` rather than the older,
+    /// now-deprecated `LanguageModelSession.GenerationError` — so only the new type
+    /// needs mapping here.
     private static func mapGenerationError(_ error: any Error) -> FoundationModelsError {
-        if #available(macOS 27.0, *) {
-            if let error = error as? LanguageModelError {
-                switch error {
-                case .contextSizeExceeded:
-                    return .contextWindowExceeded
-                case .unsupportedLanguageOrLocale:
-                    return .unsupportedLanguage
-                case .guardrailViolation:
-                    return .guardrailViolation
-                default:
-                    return .generationFailed(error)
-                }
-            }
+        guard let error = error as? LanguageModelError else {
+            return .generationFailed(error)
         }
 
-        if let error = error as? LanguageModelSession.GenerationError {
-            switch error {
-            case .exceededContextWindowSize:
-                return .contextWindowExceeded
-            case .unsupportedLanguageOrLocale:
-                return .unsupportedLanguage
-            case .guardrailViolation:
-                return .guardrailViolation
-            default:
-                return .generationFailed(error)
-            }
+        switch error {
+        case .contextSizeExceeded:
+            return .contextWindowExceeded
+        case .unsupportedLanguageOrLocale:
+            return .unsupportedLanguage
+        case .guardrailViolation:
+            return .guardrailViolation
+        default:
+            return .generationFailed(error)
         }
-
-        return .generationFailed(error)
     }
 
     // MARK: - Guardrail Recovery
@@ -249,7 +231,7 @@ class FoundationModelsHelper {
     /// Create generation options for deterministic output
     /// - Returns: GenerationOptions configured for greedy sampling
     static func deterministicOptions() -> GenerationOptions {
-        return GenerationOptions(sampling: .greedy)
+        return GenerationOptions(samplingMode: .greedy)
     }
 
     /// Create generation options with custom temperature
