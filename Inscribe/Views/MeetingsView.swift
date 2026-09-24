@@ -410,7 +410,10 @@ private struct MeetingDetailView: View {
                     .font(.caption)
                 }
 
-                ForEach(meeting.speakers.sorted { $0.generatedLabel < $1.generatedLabel }) { speaker in
+                // Here and in the menus below, labels are compared as Finder compares
+                // names, numbers by value. Plain string order put "Speaker 10" before
+                // "Speaker 2".
+                ForEach(meeting.speakers.sorted { $0.generatedLabel.localizedStandardCompare($1.generatedLabel) == .orderedAscending }) { speaker in
                     HStack {
                         Text(speaker.generatedLabel)
                             .font(.caption)
@@ -612,7 +615,7 @@ private struct MeetingDetailView: View {
     private func speakerMenu(for utterance: Utterance) -> some View {
         Menu {
             Section("Attribute to") {
-                ForEach(meeting.speakers.sorted { $0.generatedLabel < $1.generatedLabel }) { speaker in
+                ForEach(meeting.speakers.sorted { $0.generatedLabel.localizedStandardCompare($1.generatedLabel) == .orderedAscending }) { speaker in
                     Button {
                         meeting.reassign(utterance, to: speaker)
                         finishCorrection()
@@ -750,7 +753,7 @@ private struct SplitUtteranceSheet: View {
 
             Picker("Second half is", selection: $tailSpeaker) {
                 Text("A new speaker").tag(nil as MeetingSpeaker?)
-                ForEach(meeting.speakers.sorted { $0.generatedLabel < $1.generatedLabel }) { speaker in
+                ForEach(meeting.speakers.sorted { $0.generatedLabel.localizedStandardCompare($1.generatedLabel) == .orderedAscending }) { speaker in
                     Text(speaker.resolvedName).tag(speaker as MeetingSpeaker?)
                 }
             }

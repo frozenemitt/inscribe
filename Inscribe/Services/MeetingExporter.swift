@@ -58,8 +58,10 @@ enum MeetingExporter {
         out += "**Duration:** \(durationLabel(meeting.duration))  \n"
 
         if meeting.hasSpeakerAttribution {
+            // Compared as Finder compares names, numbers by value. Plain string order
+            // put "Speaker 10" before "Speaker 2".
             let names = meeting.speakers
-                .sorted { $0.generatedLabel < $1.generatedLabel }
+                .sorted { $0.generatedLabel.localizedStandardCompare($1.generatedLabel) == .orderedAscending }
                 .map(\.resolvedName)
             out += "**Speakers:** \(names.joined(separator: ", "))  \n"
         }
