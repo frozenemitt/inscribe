@@ -341,14 +341,40 @@ enum DiarizationModelStore {
 
     // MARK: - Mutation
 
-    /// Delete the local copies so the next meeting downloads them fresh.
+    /// Replace the local copies with fresh ones from HuggingFace.
     ///
     /// Removal rather than in-place replacement: FluidAudio skips any file already on
     /// disk, so a stale copy would survive a re-download.
-    static func removeLocalCopies() throws {
-        guard FileManager.default.fileExists(atPath: modelsDirectory.path) else { return }
-        try FileManager.default.removeItem(at: modelsDirectory)
+    ///
+    /// This used to stop at the removal and leave the download to the next meeting.
+    /// A meeting is not allowed to download, so that meeting recorded without speakers
+    /// and Settings offered only Install. The download now follows at once. The old
+    /// copies are moved aside rather than deleted until the new ones are in, so a
+    /// failed download puts them back instead of leaving no models at all.
+    static func reinstall() async throws {
+        let fileManager = FileManager.default
+        let previous = modelsRoot.appendingPathComponent("\(folderName).previous", isDirectory: true)
+        let previousRevision = installedRevision
+
+        try? fileManager.removeItem(at: previous)
+        if fileManager.fileExists(atPath: modelsDirectory.path) {
+            try fileManager.moveItem(at: modelsDirectory, to: previous)
+        }
         UserDefaults.standard.removeObject(forKey: installedRevisionKey)
+
+        do {
+            try await install()
+            try? fileManager.removeItem(at: previous)
+        } catch {
+            try? fileManager.removeItem(at: modelsDirectory)
+            if fileManager.fileExists(atPath: previous.path) {
+                try? fileManager.moveItem(at: previous, to: modelsDirectory)
+                if let previousRevision {
+                    recordInstalledRevision(previousRevision)
+                }
+            }
+            throw error
+        }
     }
 
     // MARK: - Unused Models

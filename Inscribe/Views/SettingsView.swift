@@ -1867,7 +1867,7 @@ struct DiarizationModelsSection: View {
                     } else {
                         // Always reachable: a check that reports a problem must leave
                         // the user something to press.
-                        Button(isUpdating ? "Removing..." : "Re-download Models") { update() }
+                        Button(isUpdating ? "Downloading..." : "Re-download Models") { update() }
                             .disabled(isChecking || isUpdating)
                     }
                 }
@@ -1876,7 +1876,7 @@ struct DiarizationModelsSection: View {
                     resultLabel(checkResult)
                 }
 
-                Text("Checking verifies every installed file against the content hash HuggingFace publishes — SHA-256 for model weights, git blob hashes for the rest. No audio or transcript leaves your Mac; it reads public metadata only. Re-downloading removes the local copies so the next meeting fetches them fresh.")
+                Text("Checking verifies every installed file against the content hash HuggingFace publishes — SHA-256 for model weights, git blob hashes for the rest. No audio or transcript leaves your Mac; it reads public metadata only. Re-downloading fetches fresh copies now and replaces the local ones; if the download fails, the current copies stay.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -2034,21 +2034,21 @@ struct DiarizationModelsSection: View {
         }
     }
 
-    /// Remove the local copies so the next meeting fetches fresh ones.
+    /// Replace the local copies with fresh ones, now.
     ///
-    /// Deleting rather than overwriting: FluidAudio skips any file already on disk, so
-    /// a stale copy would survive a re-download untouched.
+    /// This used to remove them and leave the fetch to the next meeting, which is not
+    /// allowed to download, so that meeting recorded without speakers.
     private func update() {
         isUpdating = true
 
         Task {
             do {
-                try DiarizationModelStore.removeLocalCopies()
+                try await DiarizationModelStore.reinstall()
                 checkResult = nil
-                refresh()
             } catch {
                 checkResult = .failed(error.localizedDescription)
             }
+            refresh()
             isUpdating = false
         }
     }
