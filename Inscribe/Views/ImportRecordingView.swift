@@ -1,5 +1,6 @@
 import SwiftUI
 import SwiftData
+import AVFoundation
 import UniformTypeIdentifiers
 
 #if os(macOS)
@@ -139,7 +140,7 @@ struct ImportRecordingView: View {
     }
 
     private func loadDroppedFile(from providers: [NSItemProvider]) -> Bool {
-        guard let provider = providers.first else { return false }
+        guard !isRunning, let provider = providers.first else { return false }
 
         _ = provider.loadObject(ofClass: URL.self) { url, _ in
             guard let url else { return }
@@ -148,7 +149,15 @@ struct ImportRecordingView: View {
         return true
     }
 
+    /// Whether a transcription is under way, from the Transcribe press to the save.
+    private var isRunning: Bool { progressNote != nil }
+
     private func accept(_ url: URL) {
+        // Ignored while a run is under way. Accepting resets the transcriber, and a
+        // run that was still separating speakers then saved a meeting with no timed
+        // runs: no speakers and no length.
+        guard !isRunning else { return }
+
         guard FileTranscriber.supportedExtensions.contains(url.pathExtension.lowercased()) else {
             errorMessage = "\(url.pathExtension.uppercased()) files cannot be read."
             return
@@ -165,19 +174,28 @@ struct ImportRecordingView: View {
     private func run(url: URL) {
         errorMessage = nil
         savedMeeting = nil
+        // Set before the task starts, so a drop landing before it runs is already
+        // turned away.
+        progressNote = "Transcribing…"
 
         Task {
             do {
-                progressNote = "Transcribing…"
                 let text = try await transcriber.transcribe(
                     fileURL: url,
                     contextualStrings: settings.vocabularyHints
                 )
+                // Copied at once. The transcriber is shared state, and anything that
+                // resets it during the speaker pass would otherwise empty these.
+                let segments = transcriber.timedSegments
 
                 var turns: [SpeakerTurn] = []
                 if separateSpeakers {
                     progressNote = "Separating speakers…"
                     do {
+                        // One diarizer serves every import this window runs, and it
+                        // remembers the voices it has heard. Reset first, so the
+                        // speakers of the last file are not carried into this one.
+                        await diarizer.reset()
                         try await diarizer.prepare()
                         // Decoded off the main actor: reading an hour-long file is one
                         // synchronous pass, and this Task inherits the view's isolation.
@@ -192,7 +210,7 @@ struct ImportRecordingView: View {
                 }
 
                 progressNote = "Saving…"
-                savedMeeting = save(url: url, transcript: text, turns: turns)
+                savedMeeting = save(url: url, transcript: text, segments: segments, turns: turns)
                 progressNote = nil
 
             } catch {
@@ -203,13 +221,22 @@ struct ImportRecordingView: View {
     }
 
     /// Store the result as a meeting, so it reads and exports like any other.
-    private func save(url: URL, transcript: String, turns: [SpeakerTurn]) -> Meeting {
+    private func save(
+        url: URL,
+        transcript: String,
+        segments: [TimedTranscriptSegment],
+        turns: [SpeakerTurn]
+    ) -> Meeting {
         let meeting = Meeting(title: url.deletingPathExtension().lastPathComponent)
         modelContext.insert(meeting)
 
         // Dated backwards from now by the length of the recording. Left at now, the
         // meeting spanned no time at all and every list and export read 0:00.
-        let length = transcriber.timedSegments.last?.end ?? 0
+        //
+        // The length is the file's own, its frames over its sample rate. Taken from the
+        // last transcribed word, it stopped short of any silence or music at the end.
+        let file = try? AVAudioFile(forReading: url)
+        let length = file.map { Double($0.length) / $0.fileFormat.sampleRate } ?? 0
         meeting.startedAt = Date().addingTimeInterval(-length)
         meeting.endedAt = Date()
         meeting.rawTranscript = TextProcessor.process(
@@ -219,7 +246,7 @@ struct ImportRecordingView: View {
         meeting.recordedDuration = length
 
         let aligned = SpeakerAlignment.align(
-            transcript: transcriber.timedSegments,
+            transcript: segments,
             turns: turns
         )
         let labels = SpeakerAlignment.generatedLabels(for: aligned)
