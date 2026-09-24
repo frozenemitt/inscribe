@@ -98,7 +98,6 @@ struct ScribeApp: App {
 
     #if os(macOS)
     @State private var hotkeyMonitor = GlobalHotkeyMonitor.shared
-    @State private var hasSetupHotkey = false
     #endif
 
     // MARK: - Initialization
@@ -115,20 +114,15 @@ struct ScribeApp: App {
         let engine = TranscriptionEngine.shared
         let processor = AIProcessor(promptConfiguration: prompts)
 
+        let coordinator = RecordingCoordinator(engine: engine, aiProcessor: processor, settings: settings)
+        let recorder = MeetingRecorder(engine: engine, settings: settings, aiProcessor: processor)
+
         self._settings = State(initialValue: settings)
         self._promptConfig = State(initialValue: prompts)
         self._transcriptionEngine = State(initialValue: engine)
         self._aiProcessor = State(initialValue: processor)
-        self._coordinator = State(initialValue: RecordingCoordinator(
-            engine: engine,
-            aiProcessor: processor,
-            settings: settings
-        ))
-        self._meetingRecorder = State(initialValue: MeetingRecorder(
-            engine: engine,
-            settings: settings,
-            aiProcessor: processor
-        ))
+        self._coordinator = State(initialValue: coordinator)
+        self._meetingRecorder = State(initialValue: recorder)
 
         // Register App Intents shortcuts
         _ = InscribeShortcuts.self
@@ -136,18 +130,26 @@ struct ScribeApp: App {
         Log.app.notice("Initialized")
 
         #if os(macOS)
-        // Wire up hotkey registration to fire at app launch, not on first menu click
-        appDelegate.onReady = { [self] in
-            setupHotkeyOnce()
-        }
+        // Both closures hold the instances themselves, not `self`. Reading a `@State`
+        // property outside a view gets no installed storage, and SwiftUI logs a warning
+        // for every such read.
+        //
+        // Wire up hotkey registration to fire at app launch, not on first menu click.
+        let launch = HotkeyLaunch(
+            settings: settings,
+            coordinator: coordinator,
+            transcriptionEngine: engine,
+            hotkeyMonitor: GlobalHotkeyMonitor.shared
+        )
+        appDelegate.onReady = { launch.run() }
 
         // Quitting mid-meeting must not discard it.
-        appDelegate.finishActiveMeeting = { [self] done in
-            guard meetingRecorder.hasActiveMeeting else { return false }
+        appDelegate.finishActiveMeeting = { done in
+            guard recorder.hasActiveMeeting else { return false }
 
             Log.app.notice("Quitting with a meeting open — saving it first")
             Task { @MainActor in
-                await meetingRecorder.stop(in: Self.modelContainer.mainContext)
+                await recorder.stop(in: Self.modelContainer.mainContext)
                 done()
             }
             return true
@@ -232,128 +234,134 @@ struct ScribeApp: App {
 
     // MARK: - Launch Setup
 
-    private func setupHotkeyOnce() {
-        guard !hasSetupHotkey else { return }
-        hasSetupHotkey = true
-
-        // Asking on first launch puts the prompt in front of the user while they are
-        // still thinking about Inscribe. macOS shows it only once per app version.
-        if !AccessibilityPermission.isTrusted {
-            AccessibilityPermission.requestTrust()
-        }
-
-        // The coordinator keeps finished dictations, which needs the open store.
-        coordinator.modelContext = Self.modelContainer.mainContext
-
-        wireHotkeyCallbacks()
-        armHotkey()
-
-        Task {
-            _ = await transcriptionEngine.requestAuthorization()
-            // Resolve the locale and find the model now, so the first key press does
-            // not pay for it while the user waits to speak.
-            await transcriptionEngine.prepare()
-        }
-
-        Log.app.notice("macOS setup complete")
-    }
-
-    /// Point the monitor's edges at the coordinator.
-    ///
-    /// Push-to-talk uses the press and release edges; toggle uses only the press.
-    /// `GlobalHotkeyMonitor` decides which callbacks fire, so both live here.
-    private func wireHotkeyCallbacks() {
-        hotkeyMonitor.onActivate = {
-            Task { @MainActor in await coordinator.start() }
-        }
-        hotkeyMonitor.onDeactivate = {
-            Task { @MainActor in await coordinator.stopAndProcess() }
-        }
-        hotkeyMonitor.onToggle = {
-            Task { @MainActor in await coordinator.toggle() }
-        }
-        hotkeyMonitor.onCancel = {
-            Task { @MainActor in await coordinator.cancel() }
-        }
-        // Dictation only. The tap swallows Escape while this is true, so reporting a
-        // meeting here would eat the key in whatever app the user is actually using,
-        // for the whole length of the meeting — and cancel the meeting with it.
-        Self.mirrorRecordingState(from: coordinator, into: hotkeyMonitor)
-        hotkeyMonitor.onUndo = {
-            Task { @MainActor in
-                guard let text = await TextInsertionService.undoLastInsertion() else { return }
-                AudioFeedbackService.shared.playIfEnabled(.recordingStopped, settings: settings)
-                Log.app.notice("Undid \(text.count) characters")
-            }
-        }
-    }
-
-    /// Keep the monitor's view of `isRecording` current.
-    ///
-    /// Pushed rather than pulled: the tap decides whether to swallow Escape on its own
-    /// thread, and reaching back to the main actor for the answer is the wait that used
-    /// to stall every keystroke on the machine. Re-arms itself after each change,
-    /// because `withObservationTracking` fires once.
+    /// Installs the hotkey once the app has finished launching.
     @MainActor
-    private static func mirrorRecordingState(
-        from coordinator: RecordingCoordinator,
-        into monitor: GlobalHotkeyMonitor
-    ) {
-        withObservationTracking {
-            monitor.isRecording = coordinator.isRecording
-        } onChange: {
-            Task { @MainActor in mirrorRecordingState(from: coordinator, into: monitor) }
-        }
-    }
+    private struct HotkeyLaunch {
+        let settings: AppSettings
+        let coordinator: RecordingCoordinator
+        let transcriptionEngine: TranscriptionEngine
+        let hotkeyMonitor: GlobalHotkeyMonitor
 
-    /// Apply the current settings to the monitor and install the tap.
-    private func armHotkey() {
-        hotkeyMonitor.trigger = settings.hotkeyTrigger
-        hotkeyMonitor.activationMode = settings.hotkeyActivationMode
-        hotkeyMonitor.undoTrigger = settings.undoHotkeyTrigger
-
-        let started = hotkeyMonitor.start()
-        let trigger = settings.useGlobeKey ? "Globe" : settings.hotkeyString
-        Log.app.notice("Hotkey \(trigger, privacy: .public) in \(settings.hotkeyActivationModeRaw, privacy: .public) mode, listening: \(started, privacy: .public)")
-
-        if let error = hotkeyMonitor.lastError {
-            Log.app.error("Hotkey error: \(error, privacy: .public)")
-        }
-
-        if !started { armWhenTrustArrives() }
-    }
-
-    /// Keep trying to install the tap until Accessibility trust shows up.
-    ///
-    /// `AXIsProcessTrusted()` answers false while the app is still finishing launch,
-    /// even when access has been granted, so the single check above reads it as
-    /// missing and the tap never gets built. Nothing retried: the menu bar said
-    /// "Not listening", the key did nothing, and the only way out was to open
-    /// Settings and nudge a hotkey field, because changing one calls `rearm()`.
-    /// It also covers access granted minutes later, without a relaunch.
-    private func armWhenTrustArrives() {
-        Task { @MainActor in
-            // Waiting for access has no deadline: it can be granted minutes later, and
-            // asking costs nothing. Building the tap is different — a tap that refuses
-            // to build while trusted is a real fault, and retrying it forever only
-            // tears one down and rebuilds it every two seconds for the life of the app.
-            // Three attempts, then say so and stop.
-            while !AccessibilityPermission.isTrusted {
-                try? await Task.sleep(for: .seconds(2))
-                guard !hotkeyMonitor.isRunning else { return }
+        func run() {
+            // Asking on first launch puts the prompt in front of the user while they are
+            // still thinking about Inscribe. macOS shows it only once per app version.
+            if !AccessibilityPermission.isTrusted {
+                AccessibilityPermission.requestTrust()
             }
 
-            for attempt in 1...3 {
-                guard !hotkeyMonitor.isRunning else { return }
-                if hotkeyMonitor.start() {
-                    Log.app.notice("Accessibility arrived, hotkey now listening")
-                    return
+            // The coordinator keeps finished dictations, which needs the open store.
+            coordinator.modelContext = ScribeApp.modelContainer.mainContext
+
+            wireHotkeyCallbacks()
+            armHotkey()
+
+            Task {
+                _ = await transcriptionEngine.requestAuthorization()
+                // Resolve the locale and find the model now, so the first key press does
+                // not pay for it while the user waits to speak.
+                await transcriptionEngine.prepare()
+            }
+
+            Log.app.notice("macOS setup complete")
+        }
+
+        /// Point the monitor's edges at the coordinator.
+        ///
+        /// Push-to-talk uses the press and release edges; toggle uses only the press.
+        /// `GlobalHotkeyMonitor` decides which callbacks fire, so both live here.
+        private func wireHotkeyCallbacks() {
+            hotkeyMonitor.onActivate = {
+                Task { @MainActor in await coordinator.start() }
+            }
+            hotkeyMonitor.onDeactivate = {
+                Task { @MainActor in await coordinator.stopAndProcess() }
+            }
+            hotkeyMonitor.onToggle = {
+                Task { @MainActor in await coordinator.toggle() }
+            }
+            hotkeyMonitor.onCancel = {
+                Task { @MainActor in await coordinator.cancel() }
+            }
+            // Dictation only. The tap swallows Escape while this is true, so reporting a
+            // meeting here would eat the key in whatever app the user is actually using,
+            // for the whole length of the meeting — and cancel the meeting with it.
+            Self.mirrorRecordingState(from: coordinator, into: hotkeyMonitor)
+            hotkeyMonitor.onUndo = {
+                Task { @MainActor in
+                    guard let text = await TextInsertionService.undoLastInsertion() else { return }
+                    AudioFeedbackService.shared.playIfEnabled(.recordingStopped, settings: settings)
+                    Log.app.notice("Undid \(text.count) characters")
                 }
-                Log.app.error("Accessibility granted but the tap would not build, attempt \(attempt, privacy: .public) of 3")
-                try? await Task.sleep(for: .seconds(2))
+            }
+        }
+
+        /// Keep the monitor's view of `isRecording` current.
+        ///
+        /// Pushed rather than pulled: the tap decides whether to swallow Escape on its own
+        /// thread, and reaching back to the main actor for the answer is the wait that used
+        /// to stall every keystroke on the machine. Re-arms itself after each change,
+        /// because `withObservationTracking` fires once.
+        @MainActor
+        private static func mirrorRecordingState(
+            from coordinator: RecordingCoordinator,
+            into monitor: GlobalHotkeyMonitor
+        ) {
+            withObservationTracking {
+                monitor.isRecording = coordinator.isRecording
+            } onChange: {
+                Task { @MainActor in mirrorRecordingState(from: coordinator, into: monitor) }
+            }
+        }
+
+        /// Apply the current settings to the monitor and install the tap.
+        private func armHotkey() {
+            hotkeyMonitor.trigger = settings.hotkeyTrigger
+            hotkeyMonitor.activationMode = settings.hotkeyActivationMode
+            hotkeyMonitor.undoTrigger = settings.undoHotkeyTrigger
+
+            let started = hotkeyMonitor.start()
+            let trigger = settings.useGlobeKey ? "Globe" : settings.hotkeyString
+            Log.app.notice("Hotkey \(trigger, privacy: .public) in \(settings.hotkeyActivationModeRaw, privacy: .public) mode, listening: \(started, privacy: .public)")
+
+            if let error = hotkeyMonitor.lastError {
+                Log.app.error("Hotkey error: \(error, privacy: .public)")
             }
 
-            Log.app.error("Giving up on the hotkey. Open Settings to try again.")
+            if !started { armWhenTrustArrives() }
+        }
+
+        /// Keep trying to install the tap until Accessibility trust shows up.
+        ///
+        /// `AXIsProcessTrusted()` answers false while the app is still finishing launch,
+        /// even when access has been granted, so the single check above reads it as
+        /// missing and the tap never gets built. Nothing retried: the menu bar said
+        /// "Not listening", the key did nothing, and the only way out was to open
+        /// Settings and nudge a hotkey field, because changing one calls `rearm()`.
+        /// It also covers access granted minutes later, without a relaunch.
+        private func armWhenTrustArrives() {
+            Task { @MainActor in
+                // Waiting for access has no deadline: it can be granted minutes later, and
+                // asking costs nothing. Building the tap is different — a tap that refuses
+                // to build while trusted is a real fault, and retrying it forever only
+                // tears one down and rebuilds it every two seconds for the life of the app.
+                // Three attempts, then say so and stop.
+                while !AccessibilityPermission.isTrusted {
+                    try? await Task.sleep(for: .seconds(2))
+                    guard !hotkeyMonitor.isRunning else { return }
+                }
+
+                for attempt in 1...3 {
+                    guard !hotkeyMonitor.isRunning else { return }
+                    if hotkeyMonitor.start() {
+                        Log.app.notice("Accessibility arrived, hotkey now listening")
+                        return
+                    }
+                    Log.app.error("Accessibility granted but the tap would not build, attempt \(attempt, privacy: .public) of 3")
+                    try? await Task.sleep(for: .seconds(2))
+                }
+
+                Log.app.error("Giving up on the hotkey. Open Settings to try again.")
+            }
         }
     }
     #endif

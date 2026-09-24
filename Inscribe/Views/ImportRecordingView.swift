@@ -247,7 +247,7 @@ struct ImportRecordingView: View {
             modelContext.insert(utterance)
         }
 
-        try? modelContext.save()
+        modelContext.saveOrLog()
         return meeting
     }
 }

@@ -93,6 +93,10 @@ final class TranscriptionEngine {
     private var analyzerInputContinuation: AsyncStream<AnalyzerInput>.Continuation?
     private var recognitionTask: Task<Void, any Error>?
 
+    /// Set when the results stream has ended on its own, so stopping can tell a
+    /// drained stream from one still delivering.
+    private var resultsEnded = false
+
     private let bufferConverter = BufferConverter()
     private var analyzerFormat: AVAudioFormat?
 
@@ -352,7 +356,15 @@ final class TranscriptionEngine {
         // queued and needs only a slice of the main actor to be taken up. That is the
         // difference from the version that lost the ending: it cancelled before
         // finalizing, not after.
-        try? await Task.sleep(for: .milliseconds(150))
+        //
+        // The moment is at most 150 ms, and usually far less: the loop marks the stream
+        // ended, and the wait stops there instead of sitting out the full length.
+        let drainStarted = ContinuousClock.now
+        while !resultsEnded, ContinuousClock.now - drainStarted < .milliseconds(150) {
+            try? await Task.sleep(for: .milliseconds(5))
+        }
+        let drained = resultsEnded
+        let drainTime = ContinuousClock.now - drainStarted
         recognitionTask?.cancel()
 
         recognitionTask = nil
@@ -367,7 +379,8 @@ final class TranscriptionEngine {
         release()
 
         spectrum = []
-        Self.log.notice("recording stopped, delivering \(self.currentTranscript.count, privacy: .public) chars")
+        let drainMs = Int(drainTime / .milliseconds(1))
+        Self.log.notice("recording stopped, delivering \(self.currentTranscript.count, privacy: .public) chars; results \(drained ? "drained" : "cut off", privacy: .public) after \(drainMs, privacy: .public) ms")
         return currentTranscript
     }
 
@@ -580,6 +593,7 @@ final class TranscriptionEngine {
         }
 
         // Start recognition task to process results
+        resultsEnded = false
         recognitionTask = Task { [weak self] in
             var resultCount = 0
             do {
@@ -613,6 +627,11 @@ final class TranscriptionEngine {
                             self.volatileText = text
                         }
                     }
+                }
+                // A cancelled loop belongs to a session already torn down; marking it
+                // ended could cut short the wait for the session running now.
+                if !Task.isCancelled {
+                    await MainActor.run { self?.resultsEnded = true }
                 }
             } catch {
                 Self.log.error("recognition failed after \(resultCount, privacy: .public) results: \(error, privacy: .public)")

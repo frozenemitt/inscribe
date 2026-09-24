@@ -1,5 +1,6 @@
 import Foundation
 import os
+import SwiftData
 
 /// Where the app says what it is doing.
 ///
@@ -37,4 +38,20 @@ enum Log {
     static let clipboard = make("Clipboard")
     static let notifications = make("Notifications")
     static let liveActivity = make("LiveActivity")
+    static let store = make("Store")
+}
+
+extension ModelContext {
+    /// Save, and say so in the log when it fails.
+    ///
+    /// Every save used to be `try?`. When the store lost its tables, each one failed
+    /// for two days without a line anywhere, while every meeting and dictation went
+    /// unsaved.
+    func saveOrLog(file: String = #fileID, line: Int = #line) {
+        do {
+            try save()
+        } catch {
+            Log.store.error("Save failed at \(file, privacy: .public):\(line, privacy: .public): \(error, privacy: .public)")
+        }
+    }
 }

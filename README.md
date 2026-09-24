@@ -49,7 +49,7 @@ Set **System Settings → Keyboard → "Press 🌐 to"** to *Do Nothing*, or mac
 
 ## AI Processing
 
-Apple's Foundation Models rewrite the transcript using a prompt you choose — clean up, summarize, formalize, and others, plus your own with independent generation settings. Prompts sync across devices through iCloud key-value storage.
+Apple's Foundation Models rewrite the transcript using a prompt you choose — clean up, summarize, formalize, and others, plus your own with independent generation settings.
 
 Optionally the model is also shown the text already in the field you are dictating into, fenced as context to read but not rewrite, so a dictated reply matches the thread above it.
 
