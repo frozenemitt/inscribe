@@ -11,6 +11,7 @@ import CoreAudio
 final class AudioCaptureHelper: @unchecked Sendable {
     private var audioEngine: AVAudioEngine?
     private var outputContinuation: AsyncStream<AudioData>.Continuation?
+    private var configurationObserver: (any NSObjectProtocol)?
 
     private(set) var isRunning = false
 
@@ -63,9 +64,9 @@ final class AudioCaptureHelper: @unchecked Sendable {
 
         // Install tap
         var tapCount = 0
-        // 2048 frames is about 43 milliseconds. The old 4096 meant the level band
-        // could only change twenty-three times a second, which reads as lag however
-        // smoothly it is drawn.
+        // The size asked for is a request, and macOS does not honour it: every buffer
+        // logged has held 4,800 frames, a tenth of a second at 48 kHz, whatever was
+        // asked. The level band therefore changes ten times a second.
         inputNode.installTap(
             onBus: 0,
             bufferSize: 2048,
@@ -79,6 +80,18 @@ final class AudioCaptureHelper: @unchecked Sendable {
             self?.outputContinuation?.yield(audioData)
         }
         Log.audio.notice("Tap installed")
+
+        // A change of input device — AirPods connecting, a USB microphone unplugged —
+        // stops the engine without an error, and the tap simply goes quiet. Ending the
+        // stream turns that silence into something the engine can see and report.
+        configurationObserver = NotificationCenter.default.addObserver(
+            forName: .AVAudioEngineConfigurationChange,
+            object: engine,
+            queue: nil
+        ) { [weak self] _ in
+            Log.audio.error("Audio configuration changed mid-capture — ending the stream")
+            self?.outputContinuation?.finish()
+        }
 
         // Start engine
         engine.prepare()
@@ -135,6 +148,11 @@ final class AudioCaptureHelper: @unchecked Sendable {
         guard let engine = audioEngine else {
             Log.audio.notice("No engine to stop")
             return
+        }
+
+        if let configurationObserver {
+            NotificationCenter.default.removeObserver(configurationObserver)
+            self.configurationObserver = nil
         }
 
         if engine.isRunning {

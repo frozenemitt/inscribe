@@ -79,7 +79,15 @@ final class TranscriptionEngine {
     enum SessionOwner: String, Sendable {
         case dictation
         case meeting
+        /// A Shortcuts action. Its own owner, so the hotkey, Escape and the menu bar
+        /// never mistake a shortcut's recording for a dictation and stop or paste it.
+        case shortcut
     }
+
+    /// Posted on the main actor when capture stops by itself mid-session, such as when
+    /// the input device changes. `object` is the engine; `userInfo["owner"]` is the
+    /// `SessionOwner` whose session lost its audio.
+    static let captureInterruptedNotification = Notification.Name("TranscriptionEngine.captureInterrupted")
 
     // MARK: - Audio Components
 
@@ -143,16 +151,19 @@ final class TranscriptionEngine {
     func reserve(owner: SessionOwner) -> Bool {
         guard phase == .idle else { return false }
         self.owner = owner
+        reservedFor = owner
         phase = .starting
         return true
     }
 
-    /// Give back a claim that never became a recording.
-    func releaseReservation(owner: SessionOwner) {
-        guard phase == .starting, self.owner == owner else { return }
-        self.owner = nil
-        phase = .idle
-    }
+    /// Who reserved the engine and has not yet started recording on that reservation.
+    ///
+    /// Spent by the first start that uses it. Without this, "starting, and owned by
+    /// this caller" was the whole test, and a second start from the same owner arriving
+    /// while the first was still building passed it too. The second tore down the
+    /// first's half-built session, and the first then crashed on a format it expected
+    /// to be there, or left a session nobody owned.
+    private var reservedFor: SessionOwner?
 
     /// Start recording and transcribing audio
     /// - Parameters:
@@ -173,7 +184,8 @@ final class TranscriptionEngine {
         //
         // Already `.starting` under this owner is the one exception: that is a caller
         // that reserved the engine and has now finished getting ready.
-        let heldByThisCaller = (phase == .starting && self.owner == owner)
+        let heldByThisCaller = (phase == .starting && reservedFor == owner)
+        reservedFor = nil
         if !heldByThisCaller {
             guard phase == .idle else {
                 throw TranscriptionEngineError.busy(owner: self.owner?.rawValue ?? "another session")
@@ -254,8 +266,11 @@ final class TranscriptionEngine {
                 // so diarization sees the same audio the transcriber does.
                 tap?(audioData.buffer)
 
+                // Handed over without waiting. Waiting made this loop keep pace with the
+                // main thread, so a busy main thread backed buffers up here, and at stop
+                // anything not drained in time was dropped from the transcript.
                 if let bands = spectrumAnalyzer?.bands(from: audioData.buffer) {
-                    await MainActor.run { self?.applySpectrum(bands) }
+                    Task { @MainActor in self?.applySpectrum(bands) }
                 }
 
                 do {
@@ -266,6 +281,11 @@ final class TranscriptionEngine {
                     Self.log.error("conversion failed on buffer #\(bufferCount, privacy: .public): \(error, privacy: .public)")
                 }
             }
+
+            // The stream also ends when capture stops by itself, and then nobody has
+            // asked for the session to end. Say so, or the rest of the recording is
+            // silence that looks like listening.
+            await MainActor.run { self?.captureEnded() }
         }
 
         phase = .recording
@@ -292,6 +312,13 @@ final class TranscriptionEngine {
         // Held, not released: nothing else may take the engine until this session has
         // finished handing back its words.
         phase = .stopping
+
+        // How much of the transcript the recognizer had already confirmed when the key
+        // came up. Text confirmed that early could be rewritten by the AI pass while
+        // the user is still talking, so this number decides whether that is worth
+        // building.
+        let finalAtRelease = currentTranscript.count
+        let heardAtRelease = currentTranscript.count + volatileText.count
 
         // Stop audio capture helper. This finishes the audio stream, so the task
         // below runs out of buffers on its own.
@@ -380,7 +407,7 @@ final class TranscriptionEngine {
 
         spectrum = []
         let drainMs = Int(drainTime / .milliseconds(1))
-        Self.log.notice("recording stopped, delivering \(self.currentTranscript.count, privacy: .public) chars; results \(drained ? "drained" : "cut off", privacy: .public) after \(drainMs, privacy: .public) ms")
+        Self.log.notice("recording stopped, delivering \(self.currentTranscript.count, privacy: .public) chars; \(finalAtRelease, privacy: .public) of \(heardAtRelease, privacy: .public) were final at release; results \(drained ? "drained" : "cut off", privacy: .public) after \(drainMs, privacy: .public) ms")
         return currentTranscript
     }
 
@@ -414,23 +441,25 @@ final class TranscriptionEngine {
     /// outcome; an engine stuck in `.stopping` refuses every recording after it,
     /// without a sound, until the app is relaunched — which is what a hung await here
     /// looks like from the outside: a hotkey that has died.
+    ///
+    /// Work that runs out of time is abandoned, not awaited; see `withDeadline`.
     private nonisolated static func bounded(
         _ seconds: Double,
         _ work: @escaping @Sendable () async -> Void
     ) async -> Bool {
-        await withTaskGroup(of: Bool.self) { group in
-            group.addTask {
-                await work()
-                return true
-            }
-            group.addTask {
-                try? await Task.sleep(for: .seconds(seconds))
-                return false
-            }
-            let first = await group.next() ?? false
-            group.cancelAll()
-            return first
-        }
+        (try? await withDeadline(seconds: seconds) { await work() }) != nil
+    }
+
+    /// Note that capture ended by itself while a session was still recording.
+    private func captureEnded() {
+        guard phase == .recording, let owner else { return }
+        Self.log.error("capture stopped by itself mid-session for \(owner.rawValue, privacy: .public)")
+        error = .captureInterrupted
+        NotificationCenter.default.post(
+            name: Self.captureInterruptedNotification,
+            object: self,
+            userInfo: ["owner": owner]
+        )
     }
 
     /// Hand the engine back.
@@ -783,6 +812,7 @@ enum TranscriptionEngineError: Error, LocalizedError {
     case transcriptionFailed(String)
     case localeNotSupported
     case busy(owner: String)
+    case captureInterrupted
 
     var errorDescription: String? {
         switch self {
@@ -796,6 +826,8 @@ enum TranscriptionEngineError: Error, LocalizedError {
             return "No supported language locale found"
         case .busy(let owner):
             return "Already recording for \(owner)"
+        case .captureInterrupted:
+            return "The microphone changed mid-recording, so recording stopped there."
         }
     }
 }
