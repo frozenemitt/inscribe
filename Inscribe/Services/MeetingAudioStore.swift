@@ -154,6 +154,10 @@ final class MeetingAudioWriter: @unchecked Sendable {
 
         if converter == nil || converter?.inputFormat != buffer.format {
             converter = AVAudioConverter(from: buffer.format, to: format)
+            // Mixed rather than remapped. Remapping three channels to two keeps the
+            // first two and drops the third, so one side of the system audio never
+            // reached the recording.
+            converter?.downmix = true
         }
         guard let converter else { return nil }
 

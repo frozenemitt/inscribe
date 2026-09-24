@@ -217,6 +217,9 @@ enum AudioFileSamples {
         guard let converter = AVAudioConverter(from: file.processingFormat, to: target) else {
             throw AudioFileError.unsupportedFormat
         }
+        // Mixed to mono rather than remapped, which keeps only the first channel: a
+        // call recorded with each side on its own channel would lose one side.
+        converter.downmix = true
 
         // Read in chunks so an hour-long file does not arrive as one enormous buffer.
         let framesPerChunk: AVAudioFrameCount = 1 << 16
@@ -302,6 +305,10 @@ final class DiarizationAudioConverter: @unchecked Sendable {
 
         if converter == nil || sourceFormat != inputFormat {
             converter = AVAudioConverter(from: inputFormat, to: targetFormat)
+            // Mixed, not remapped. Without this the converter keeps channel 0 and drops
+            // the rest, and with system audio on, channel 0 is the microphone: the
+            // diarizer never heard anyone on the call.
+            converter?.downmix = true
             sourceFormat = inputFormat
         }
         guard let converter else { return nil }
