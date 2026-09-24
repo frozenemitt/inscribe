@@ -449,13 +449,9 @@ final class PromptConfiguration {
         var loadedPrompts = Self.builtInPrompts
 
         if let data = UserDefaults.standard.data(forKey: localKey) {
-            do {
-                let customPrompts = try JSONDecoder().decode([Prompt].self, from: data)
-                loadedPrompts.append(contentsOf: customPrompts.filter { !$0.isBuiltIn })
-                Log.prompts.notice("Loaded \(customPrompts.count, privacy: .public) custom prompts")
-            } catch {
-                Log.prompts.error("Error decoding prompts: \(error, privacy: .public)")
-            }
+            let customPrompts = Self.decodePromptsSkippingFailures(from: data)
+            loadedPrompts.append(contentsOf: customPrompts.filter { !$0.isBuiltIn })
+            Log.prompts.notice("Loaded \(customPrompts.count, privacy: .public) custom prompts")
         }
 
         // Apply saved visibility settings (for built-in prompts)
@@ -477,6 +473,34 @@ final class PromptConfiguration {
         }
 
         self.prompts = loadedPrompts
+    }
+
+    /// Decode each stored prompt on its own, rather than the array as a whole.
+    ///
+    /// `JSONDecoder` fails an entire `[Prompt]` decode the moment one element is
+    /// malformed, and the only thing left to load then is an empty list — which the
+    /// next call to `savePrompts` would write back, permanently wiping every custom
+    /// prompt the user had, not just the corrupt one. Decoding element by element
+    /// means one bad prompt is dropped and logged instead of taking the rest down
+    /// with it.
+    private static func decodePromptsSkippingFailures(from data: Data) -> [Prompt] {
+        guard let rawArray = try? JSONSerialization.jsonObject(with: data) as? [Any] else {
+            Log.prompts.error("Custom prompts data is not a JSON array; ignoring it")
+            return []
+        }
+
+        return rawArray.compactMap { element in
+            guard let elementData = try? JSONSerialization.data(withJSONObject: element) else {
+                Log.prompts.error("Could not re-serialize a stored prompt; skipping it")
+                return nil
+            }
+            do {
+                return try JSONDecoder().decode(Prompt.self, from: elementData)
+            } catch {
+                Log.prompts.error("Skipping a corrupt custom prompt: \(error, privacy: .public)")
+                return nil
+            }
+        }
     }
 
     private func saveVisibility() {
