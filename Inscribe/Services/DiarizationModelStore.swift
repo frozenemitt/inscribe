@@ -81,10 +81,41 @@ enum DiarizationModelStore {
 
     // MARK: - Local State
 
+    /// Whether both models are on disk whole, ready to load.
+    ///
+    /// Checking that the two folders exist was not enough. An install interrupted part
+    /// way leaves them without their `coremldata.bin`, or with a weight file still named
+    /// `.partial`; Settings said Installed, and the next meeting start found the models
+    /// incomplete and went to HuggingFace for them. This is FluidAudio's own test for a
+    /// complete model.
     static var isInstalled: Bool {
-        requiredFiles.allSatisfy {
-            FileManager.default.fileExists(atPath: modelsDirectory.appendingPathComponent($0).path)
+        requiredFiles.allSatisfy { name in
+            let model = modelsDirectory.appendingPathComponent(name)
+            return FileManager.default.fileExists(atPath: model.appendingPathComponent("coremldata.bin").path)
+                && !containsPartialDownload(model)
         }
+    }
+
+    /// Whether a download into `folder` was cut off and left a `.partial` file behind.
+    private static func containsPartialDownload(_ folder: URL) -> Bool {
+        guard let enumerator = FileManager.default.enumerator(
+            at: folder,
+            includingPropertiesForKeys: nil
+        ) else { return false }
+
+        for case let file as URL in enumerator where file.pathExtension == "partial" {
+            return true
+        }
+        return false
+    }
+
+    /// Keep FluidAudio off the network.
+    ///
+    /// Left to itself, FluidAudio deletes and re-downloads any model it finds incomplete
+    /// or cannot load, wherever it is called from. Set once at launch; `install()` lifts
+    /// it for its own download and puts it back.
+    static func stayOffline() {
+        ModelHub.offlineMode = true
     }
 
     /// When the models landed on disk.
@@ -113,7 +144,13 @@ enum DiarizationModelStore {
     ///
     /// Deliberately not called from the recording path: starting a meeting must not
     /// reach the network. Settings is the only caller, behind a button.
+    ///
+    /// The one place FluidAudio is let online. An incomplete install is repaired here
+    /// too: FluidAudio finds the broken model, deletes it and downloads it again.
     static func install() async throws {
+        ModelHub.offlineMode = false
+        defer { ModelHub.offlineMode = true }
+
         _ = try await DiarizerModels.downloadIfNeeded()
 
         // FluidAudio keeps no record of which revision it took, so "check for updates"

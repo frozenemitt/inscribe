@@ -152,6 +152,9 @@ final class MeetingRecorder {
         self.aiProcessor = aiProcessor
         #if os(macOS)
         self.indicator = MeetingIndicatorController(settings: settings)
+
+        // At launch, before anything can load a speaker model.
+        DiarizationModelStore.stayOffline()
         #endif
 
         // Built once, at launch, before any meeting can start: every meeting still open
