@@ -106,6 +106,16 @@ final class RecordingCoordinator {
     #endif
     @ObservationIgnored private var interruptionObserver: (any NSObjectProtocol)?
 
+    /// What the target field held when the dictation began, for the AI pass.
+    ///
+    /// Read at the start rather than at delivery: the request warmed while the user
+    /// speaks has to open with the same text as the request sent at release, and the
+    /// field has not changed in between, since nothing is pasted until the end.
+    @ObservationIgnored private var surroundingText: String?
+
+    /// Warms the AI session on the words confirmed so far, while recording.
+    @ObservationIgnored private var prefixWarmer: Task<Void, Never>?
+
     /// Longest the AI pass may take before the raw transcript is delivered instead.
     ///
     /// Until the text lands, every press is refused as "still delivering", so a model
@@ -269,8 +279,15 @@ final class RecordingCoordinator {
         // Load the model while the user is still speaking. It has to be in memory
         // before it can answer, and that load used to begin only once they had
         // finished — seconds of waiting bolted onto seconds of talking.
+        surroundingText = nil
         if settings.aiEnabled, !skipAIOnce {
             aiProcessor.prewarm(promptId: effectivePromptId)
+            #if os(macOS)
+            if settings.useSurroundingContext {
+                surroundingText = TextInsertionService.focusedFieldContext(in: targetApp)
+            }
+            #endif
+            startPrefixWarmer()
         }
 
         // Sounded only once capture is live, so the user does not talk over the gap.
@@ -301,6 +318,8 @@ final class RecordingCoordinator {
 
         maxDurationTask?.cancel()
         maxDurationTask = nil
+        prefixWarmer?.cancel()
+        prefixWarmer = nil
 
         AudioFeedbackService.shared.playIfEnabled(.recordingStopped, settings: settings)
 
@@ -415,13 +434,21 @@ final class RecordingCoordinator {
             return
         }
 
-        // Read now rather than at delivery, and asked of the app the dictation was aimed
-        // at: by the time the model answers the user may be looking at something else,
-        // and the field we want is the one they were dictating into.
-        var surroundingText: String?
+        // Normally read when the dictation began. Asked again now only if that found
+        // nothing — a Chromium app can take a moment to expose its fields — and asked
+        // of the app the dictation was aimed at, not whatever the user looks at now.
+        var surroundingText = self.surroundingText
         #if os(macOS)
-        if settings.useSurroundingContext {
+        if surroundingText == nil, settings.useSurroundingContext {
             surroundingText = TextInsertionService.focusedFieldContext(in: targetApp)
+        }
+        #endif
+        // The rewrite is shown in the panel as it is written.
+        var onPartial: (@MainActor (String) -> Void)?
+        #if os(macOS)
+        if settings.showDictationOverlay {
+            let overlay = self.overlay
+            onPartial = { @MainActor text in overlay.showRewrite(text) }
         }
         #endif
 
@@ -431,11 +458,12 @@ final class RecordingCoordinator {
         let finalText: String
         do {
             let context = surroundingText
-            finalText = try await withDeadline(seconds: Self.aiDeadline) { [aiProcessor] in
+            finalText = try await withDeadline(seconds: Self.aiDeadline) { [aiProcessor, onPartial] in
                 try await aiProcessor.process(
                     text: transcript,
                     promptId: promptId,
-                    surroundingText: context
+                    surroundingText: context,
+                    onPartial: onPartial
                 )
             }
             AudioFeedbackService.shared.stopProcessingLoop()
@@ -514,6 +542,8 @@ final class RecordingCoordinator {
         overlay.hide()
         #endif
 
+        prefixWarmer?.cancel()
+        prefixWarmer = nil
         engine.cancelRecording(owner: .dictation)
         aiProcessor.discardPrewarm()
         skipAIOnce = false
@@ -559,6 +589,31 @@ final class RecordingCoordinator {
             lastDestination = "Clipboard"
         }
         #endif
+    }
+
+    /// Keep the warmed AI session reading along as the recognizer confirms words.
+    ///
+    /// Once a second, and only when a real stretch has been added, since each warming
+    /// reads the whole prefix again. Word replacements are applied exactly as they
+    /// will be at release, so the prefix matches the request character for character.
+    private func startPrefixWarmer() {
+        prefixWarmer?.cancel()
+        let promptId = effectivePromptId
+        prefixWarmer = Task { [weak self] in
+            var warmedLength = 0
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(1))
+                guard let self, self.isRecording, !Task.isCancelled else { return }
+                let confirmed = self.engine.currentTranscript
+                guard confirmed.count >= warmedLength + 40 else { continue }
+                warmedLength = confirmed.count
+                self.aiProcessor.warmPrefix(
+                    promptId: promptId,
+                    transcriptSoFar: TextProcessor.process(confirmed, replacements: self.settings.wordReplacements),
+                    surroundingText: self.surroundingText
+                )
+            }
+        }
     }
 
     #if os(macOS)

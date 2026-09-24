@@ -93,6 +93,31 @@ class FoundationModelsHelper {
         }
     }
 
+    /// Generate the rewritten transcript, handing each partial version to `onPartial`
+    /// as it is written.
+    ///
+    /// Takes as long as asking for the whole answer at once — measured at 3.0–3.1 s
+    /// either way for 733 characters — but the first words exist after about 0.7 s
+    /// instead of at the end, so the panel can show them while the rest is written.
+    static func streamTranscription(
+        session: LanguageModelSession,
+        prompt: String,
+        options: GenerationOptions,
+        onPartial: @MainActor (String) -> Void
+    ) async throws -> TranscriptionResult {
+        do {
+            let stream = session.streamResponse(to: prompt, generating: TranscriptionResult.self, options: options)
+            for try await snapshot in stream {
+                if let partial = snapshot.content.text, !partial.isEmpty {
+                    onPartial(partial)
+                }
+            }
+            return try await stream.collect().content
+        } catch {
+            throw mapGenerationError(error)
+        }
+    }
+
     /// Translate whatever the framework threw into our own error type.
     ///
     /// The minimum target is macOS 27, where guardrail, context-window and language

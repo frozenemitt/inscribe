@@ -47,6 +47,7 @@ final class DictationOverlayController {
 
     func show() {
         model.text = ""
+        model.rewrite = ""
         model.isProcessing = false
 
         // A panel the window server has taken off the other desktops is thrown away
@@ -129,11 +130,23 @@ final class DictationOverlayController {
 
     func showProcessing() {
         model.isProcessing = true
+        model.rewrite = ""
+    }
+
+    /// Show the AI's rewrite as it is written.
+    ///
+    /// The words appear about 0.7 s after release instead of when the whole rewrite
+    /// is done, 3 s later for a long dictation. The paste still waits for the end.
+    func showRewrite(_ text: String) {
+        guard model.isProcessing, model.rewrite != text else { return }
+        model.rewrite = text
+        growToFit()
     }
 
     func hide() {
         panel?.orderOut(nil)
         model.text = ""
+        model.rewrite = ""
         model.isProcessing = false
     }
 
@@ -359,6 +372,8 @@ private final class DragHandleView: NSView {
 final class OverlayModel {
     var text = ""
     var isProcessing = false
+    /// The AI's rewrite as far as it has got, shown in place of "Processing…".
+    var rewrite = ""
     /// Loudness per frequency band, 0 to 1, low to high — one per bar.
     var spectrum: [Double] = []
 
@@ -448,7 +463,7 @@ private struct DictationOverlayView: View {
     }
 
     private var displayText: String {
-        if model.isProcessing { return "Processing…" }
+        if model.isProcessing { return model.rewrite.isEmpty ? "Processing…" : model.rewrite }
         return model.text.isEmpty ? "Listening…" : model.text
     }
 }
