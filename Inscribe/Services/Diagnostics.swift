@@ -15,7 +15,7 @@ import OSLog
 @MainActor
 enum Diagnostics {
 
-    struct Entry: Identifiable {
+    struct Entry: Identifiable, Sendable {
         let id = UUID()
         let date: Date
         let category: String
@@ -26,7 +26,12 @@ enum Diagnostics {
     }
 
     /// The most recent entries, newest last.
-    static func recent(limit: Int = 200) throws -> [Entry] {
+    ///
+    /// `OSLogStore.getEntries` walks the unified log and can take real time on a
+    /// busy run; marked `nonisolated` (rather than `@MainActor` like the rest of
+    /// this enum) so the caller can run it off the main actor and not stall the
+    /// Settings window while it works.
+    nonisolated static func recent(limit: Int = 200) throws -> [Entry] {
         let store = try OSLogStore(scope: .currentProcessIdentifier)
         let start = store.position(date: Date().addingTimeInterval(-60 * 60))
 

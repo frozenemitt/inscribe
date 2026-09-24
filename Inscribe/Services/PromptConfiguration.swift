@@ -82,13 +82,17 @@ struct Prompt: Identifiable, Codable, Equatable, Hashable {
     let id: UUID
     var name: String
     var systemPrompt: String
-    var userTemplate: String  // Use {text} as placeholder for transcribed text
+    var userTemplate: String  // Instructions for the AI; the transcript is appended after them automatically
     var isBuiltIn: Bool
     var isVisible: Bool
 
     // Generation settings (per-prompt tuning)
     var temperature: Double
     var samplingMode: SamplingMode
+
+    /// No longer offered in Settings and never passed to the model — capping the
+    /// response length could cut a rewrite short mid-sentence. Kept only so a
+    /// prompt saved before this changed still decodes without error.
     var maxResponseTokens: Int?
 
     init(
@@ -128,10 +132,16 @@ struct Prompt: Identifiable, Codable, Equatable, Hashable {
     }
 
     /// Apply the prompt template to transcribed text.
-    /// Wraps the transcription in <transcription> tags so the model can
-    /// clearly distinguish the instructions from the content to process.
+    ///
+    /// Wraps the transcription in <transcription> tags so the model can clearly
+    /// distinguish the instructions from the content to process. Older templates,
+    /// and the help text that used to sit next to this editor, asked for a literal
+    /// `{text}` placeholder; that substitution hasn't existed for a while, so any
+    /// leftover `{text}` is dropped rather than left sitting uselessly next to the
+    /// transcript that is now appended after it.
     func apply(to text: String) -> String {
-        let trimmed = userTemplate.trimmingCharacters(in: .whitespacesAndNewlines)
+        let withoutPlaceholder = userTemplate.replacingOccurrences(of: "{text}", with: "")
+        let trimmed = withoutPlaceholder.trimmingCharacters(in: .whitespacesAndNewlines)
         return "\(trimmed)\n\n<transcription>\n\(text)\n</transcription>"
     }
 
@@ -144,10 +154,12 @@ struct Prompt: Identifiable, Codable, Equatable, Hashable {
         case .topK(let k): .random(top: k)
         }
 
+        // Apple documents temperature as 0 to 1 inclusive; a prompt saved before
+        // the Settings slider was capped to that range could still hold a higher
+        // value, so it is clamped here rather than trusted.
         return GenerationOptions(
-            sampling: sampling,
-            temperature: temperature,
-            maximumResponseTokens: maxResponseTokens
+            samplingMode: sampling,
+            temperature: min(temperature, 1.0)
         )
     }
 }
@@ -312,16 +324,6 @@ final class PromptConfiguration {
         }
     }
 
-    /// Set visibility for a prompt
-    func setVisibility(promptId: UUID, visible: Bool) {
-        guard let index = prompts.firstIndex(where: { $0.id == promptId }) else { return }
-        prompts[index].isVisible = visible
-        saveVisibility()
-        if !prompts[index].isBuiltIn {
-            savePrompts()
-        }
-    }
-
     /// Update generation settings for any prompt (including built-in)
     func updateGenerationSettings(
         promptId: UUID,
@@ -360,18 +362,6 @@ final class PromptConfiguration {
         Log.prompts.notice("Added prompt: \(newPrompt.name)")
     }
 
-    /// Create and add a new prompt
-    func createPrompt(name: String, systemPrompt: String, userTemplate: String) -> Prompt {
-        let prompt = Prompt(
-            name: name,
-            systemPrompt: systemPrompt,
-            userTemplate: userTemplate,
-            isBuiltIn: false
-        )
-        addPrompt(prompt)
-        return prompt
-    }
-
     /// Update an existing prompt (only custom prompts can be updated)
     func updatePrompt(_ prompt: Prompt) {
         guard let index = prompts.firstIndex(where: { $0.id == prompt.id }) else {
@@ -406,30 +396,6 @@ final class PromptConfiguration {
         Log.prompts.notice("Deleted prompt: \(removed.name)")
     }
 
-    /// Reorder prompts
-    func movePrompt(from source: IndexSet, to destination: Int) {
-        // Manually implement move without SwiftUI dependency
-        let itemsToMove = source.sorted().compactMap { index in
-            index < prompts.count ? prompts[index] : nil
-        }
-        
-        // Remove items (in reverse order to maintain indices)
-        for index in source.sorted(by: >) {
-            if index < prompts.count {
-                prompts.remove(at: index)
-            }
-        }
-        
-        // Calculate adjusted destination
-        let adjustedDestination = source.reduce(destination) { destination, sourceIndex in
-            sourceIndex < destination ? destination - 1 : destination
-        }
-        
-        // Insert items at destination
-        prompts.insert(contentsOf: itemsToMove, at: adjustedDestination)
-        savePrompts()
-    }
-
     // MARK: - Persistence
 
     private func loadPrompts() {
@@ -437,13 +403,9 @@ final class PromptConfiguration {
         var loadedPrompts = Self.builtInPrompts
 
         if let data = UserDefaults.standard.data(forKey: localKey) {
-            do {
-                let customPrompts = try JSONDecoder().decode([Prompt].self, from: data)
-                loadedPrompts.append(contentsOf: customPrompts.filter { !$0.isBuiltIn })
-                Log.prompts.notice("Loaded \(customPrompts.count, privacy: .public) custom prompts")
-            } catch {
-                Log.prompts.error("Error decoding prompts: \(error, privacy: .public)")
-            }
+            let customPrompts = Self.decodePromptsSkippingFailures(from: data)
+            loadedPrompts.append(contentsOf: customPrompts.filter { !$0.isBuiltIn })
+            Log.prompts.notice("Loaded \(customPrompts.count, privacy: .public) custom prompts")
         }
 
         // Apply saved visibility settings (for built-in prompts)
@@ -465,6 +427,34 @@ final class PromptConfiguration {
         }
 
         self.prompts = loadedPrompts
+    }
+
+    /// Decode each stored prompt on its own, rather than the array as a whole.
+    ///
+    /// `JSONDecoder` fails an entire `[Prompt]` decode the moment one element is
+    /// malformed, and the only thing left to load then is an empty list — which the
+    /// next call to `savePrompts` would write back, permanently wiping every custom
+    /// prompt the user had, not just the corrupt one. Decoding element by element
+    /// means one bad prompt is dropped and logged instead of taking the rest down
+    /// with it.
+    private static func decodePromptsSkippingFailures(from data: Data) -> [Prompt] {
+        guard let rawArray = try? JSONSerialization.jsonObject(with: data) as? [Any] else {
+            Log.prompts.error("Custom prompts data is not a JSON array; ignoring it")
+            return []
+        }
+
+        return rawArray.compactMap { element in
+            guard let elementData = try? JSONSerialization.data(withJSONObject: element) else {
+                Log.prompts.error("Could not re-serialize a stored prompt; skipping it")
+                return nil
+            }
+            do {
+                return try JSONDecoder().decode(Prompt.self, from: elementData)
+            } catch {
+                Log.prompts.error("Skipping a corrupt custom prompt: \(error, privacy: .public)")
+                return nil
+            }
+        }
     }
 
     private func saveVisibility() {

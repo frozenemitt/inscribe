@@ -384,11 +384,6 @@ final class AppSettings {
         Log.settings.notice("Reset to defaults")
     }
 
-    /// Check if AI processing should be used for current transcription
-    var shouldProcessWithAI: Bool {
-        aiEnabled && selectedPromptId != nil
-    }
-
     /// Get the user's chosen sound ID for a feedback sound event
     func soundId(for sound: AudioFeedbackService.Sound) -> String {
         switch sound {
