@@ -1002,14 +1002,17 @@ struct SoundsSettingsView: View {
 
     private func deleteSound(_ id: String) {
         do {
-            // Reset any settings that reference this sound back to default
+            try soundCatalog.deleteCustomSound(id: id)
+
+            // Reset any settings that reference this sound back to default, now
+            // that the file is actually gone — resetting first meant a failed
+            // delete still stranded the user's sound choice on a file that was
+            // never removed.
             if settings.startSoundName == id { settings.startSoundName = "Morse" }
             if settings.stopSoundName == id { settings.stopSoundName = "Pop" }
             if settings.completeSoundName == id { settings.completeSoundName = "Glass" }
             if settings.errorSoundName == id { settings.errorSoundName = "Basso" }
             if settings.processingSoundName == id { settings.processingSoundName = "Bottle" }
-
-            try soundCatalog.deleteCustomSound(id: id)
         } catch {
             importError = "Failed to delete: \(error.localizedDescription)"
         }
@@ -1465,6 +1468,14 @@ struct AboutSettingsView: View {
         }
     }
 
+    /// Read from the bundle rather than hard-coded, so this stops matching
+    /// reality the moment the app ships a new version.
+    private var appVersionText: String {
+        let shortVersion = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "—"
+        let build = Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "—"
+        return "Version \(shortVersion) (\(build))"
+    }
+
     @State private var entries: [Diagnostics.Entry] = []
     @State private var showingDiagnostics = false
 
@@ -1484,7 +1495,7 @@ struct AboutSettingsView: View {
                 .font(.headline)
                 .foregroundStyle(.secondary)
 
-            Text("Version 1.0.0")
+            Text(appVersionText)
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
 

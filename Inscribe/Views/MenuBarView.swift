@@ -175,13 +175,16 @@ struct MenuBarView: View {
                 .foregroundStyle(.secondary)
 
             Menu {
+                // A nil selectedPromptId means the default prompt, not "nothing
+                // selected" — comparing against the id directly left the default
+                // showing no checkmark at all while it was the one actually in use.
                 ForEach(promptConfig.visiblePrompts) { prompt in
                     Button {
                         settings.selectedPromptId = prompt.id
                     } label: {
                         HStack {
                             Text(prompt.name)
-                            if prompt.id == settings.selectedPromptId {
+                            if prompt.id == (settings.selectedPromptId ?? PromptConfiguration.defaultPromptId) {
                                 Image(systemName: "checkmark")
                             }
                         }
