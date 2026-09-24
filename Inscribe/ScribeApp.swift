@@ -64,7 +64,25 @@ struct ScribeApp: App {
         let log = Logger(subsystem: "com.inscribe.app", category: "Store")
         let schema = Schema(versionedSchema: MeetingSchemaV1.self)
         do {
-            let container = try ModelContainer(for: schema, migrationPlan: MeetingMigrationPlan.self)
+            #if os(macOS)
+            // A file of our own, never the default. The Mac app is not sandboxed, so the
+            // default is the shared ~/Library/Application Support/default.store — a file
+            // Apple's icloudmailagent also keeps its data in. Each of the two rebuilt it
+            // in its own schema on launch and dropped the other's tables: every meeting
+            // and dictation was lost, and every save after that failed and was retried
+            // on the main thread until the hotkey lagged by seconds.
+            let folder = URL.applicationSupportDirectory.appending(path: "Inscribe", directoryHint: .isDirectory)
+            try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+            let config = ModelConfiguration(schema: schema, url: folder.appending(path: "Inscribe.store"))
+            #else
+            // Sandboxed, so the default location is already private to this app.
+            let config = ModelConfiguration(schema: schema)
+            #endif
+            let container = try ModelContainer(
+                for: schema,
+                migrationPlan: MeetingMigrationPlan.self,
+                configurations: [config]
+            )
             log.notice("Meeting store opened on disk")
             MeetingStoreStatus.shared.setPersistent(true)
             return container
