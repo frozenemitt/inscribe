@@ -89,6 +89,10 @@ struct Prompt: Identifiable, Codable, Equatable, Hashable {
     // Generation settings (per-prompt tuning)
     var temperature: Double
     var samplingMode: SamplingMode
+
+    /// No longer offered in Settings and never passed to the model — capping the
+    /// response length could cut a rewrite short mid-sentence. Kept only so a
+    /// prompt saved before this changed still decodes without error.
     var maxResponseTokens: Int?
 
     init(
@@ -144,10 +148,12 @@ struct Prompt: Identifiable, Codable, Equatable, Hashable {
         case .topK(let k): .random(top: k)
         }
 
+        // Apple documents temperature as 0 to 1 inclusive; a prompt saved before
+        // the Settings slider was capped to that range could still hold a higher
+        // value, so it is clamped here rather than trusted.
         return GenerationOptions(
             sampling: sampling,
-            temperature: temperature,
-            maximumResponseTokens: maxResponseTokens
+            temperature: min(temperature, 1.0)
         )
     }
 }

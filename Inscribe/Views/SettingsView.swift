@@ -500,8 +500,6 @@ struct PromptDetailView: View {
     @State private var samplingModeTag: String
     @State private var topPThreshold: Double
     @State private var topKValue: Int
-    @State private var limitResponseTokens: Bool
-    @State private var maxResponseTokens: Int
 
     init(
         prompt: Prompt,
@@ -534,8 +532,6 @@ struct PromptDetailView: View {
             self._topPThreshold = State(initialValue: 0.9)
             self._topKValue = State(initialValue: 10)
         }
-        self._limitResponseTokens = State(initialValue: prompt.maxResponseTokens != nil)
-        self._maxResponseTokens = State(initialValue: prompt.maxResponseTokens ?? 500)
     }
 
     var body: some View {
@@ -586,7 +582,7 @@ struct PromptDetailView: View {
                             .foregroundStyle(.secondary)
                             .monospacedDigit()
                     }
-                    Slider(value: $temperature, in: 0.0...2.0, step: 0.1)
+                    Slider(value: $temperature, in: 0.0...1.0, step: 0.1)
                     Text(temperatureHint)
                         .font(.caption2)
                         .foregroundStyle(.tertiary)
@@ -620,12 +616,6 @@ struct PromptDetailView: View {
                 if samplingModeTag == "topK" {
                     Stepper("Top K: \(topKValue)", value: $topKValue, in: 1...100)
                 }
-
-                Toggle("Limit response length", isOn: $limitResponseTokens)
-
-                if limitResponseTokens {
-                    Stepper("Max tokens: \(maxResponseTokens)", value: $maxResponseTokens, in: 50...2000, step: 50)
-                }
             }
 
             if hasUnsavedChanges {
@@ -642,13 +632,12 @@ struct PromptDetailView: View {
                                 // prompt wholesale, so anything left out is reset.
                                 isVisible: prompt.isVisible,
                                 temperature: temperature,
-                                samplingMode: currentSamplingMode,
-                                maxResponseTokens: limitResponseTokens ? maxResponseTokens : nil
+                                samplingMode: currentSamplingMode
                             )
                             onSave(updated)
                         }
                         if hasGenerationChanges {
-                            onSaveGenerationSettings?(temperature, currentSamplingMode, limitResponseTokens ? maxResponseTokens : nil)
+                            onSaveGenerationSettings?(temperature, currentSamplingMode, nil)
                         }
                     }
                     .buttonStyle(.borderedProminent)
@@ -664,8 +653,7 @@ struct PromptDetailView: View {
                             userTemplate: userTemplate,
                             isBuiltIn: false,
                             temperature: temperature,
-                            samplingMode: currentSamplingMode,
-                            maxResponseTokens: limitResponseTokens ? maxResponseTokens : nil
+                            samplingMode: currentSamplingMode
                         )
                         onDuplicate(duplicate)
                     } label: {
@@ -694,8 +682,6 @@ struct PromptDetailView: View {
             case .topK(let k): topKValue = k
             default: break
             }
-            limitResponseTokens = newPrompt.maxResponseTokens != nil
-            maxResponseTokens = newPrompt.maxResponseTokens ?? 500
         }
     }
 
@@ -712,8 +698,7 @@ struct PromptDetailView: View {
     private var temperatureHint: String {
         if temperature < 0.3 { return "Very predictable" }
         if temperature < 0.7 { return "Balanced" }
-        if temperature < 1.2 { return "Creative" }
-        return "Highly creative"
+        return "Creative"
     }
 
     private var samplingHint: String {
@@ -737,8 +722,7 @@ struct PromptDetailView: View {
 
     private var hasGenerationChanges: Bool {
         temperature != prompt.temperature ||
-        currentSamplingMode != prompt.samplingMode ||
-        (limitResponseTokens ? maxResponseTokens : nil) != prompt.maxResponseTokens
+        currentSamplingMode != prompt.samplingMode
     }
 }
 
@@ -752,8 +736,6 @@ struct AddPromptSheet: View {
     @State private var samplingModeTag = "automatic"
     @State private var topPThreshold = 0.9
     @State private var topKValue = 10
-    @State private var limitResponseTokens = false
-    @State private var maxResponseTokens = 500
 
     let onAdd: (Prompt) -> Void
 
@@ -806,7 +788,7 @@ struct AddPromptSheet: View {
                             .foregroundStyle(.secondary)
                             .monospacedDigit()
                     }
-                    Slider(value: $temperature, in: 0.0...2.0, step: 0.1)
+                    Slider(value: $temperature, in: 0.0...1.0, step: 0.1)
                 }
 
                 Picker("Sampling", selection: $samplingModeTag) {
@@ -837,12 +819,6 @@ struct AddPromptSheet: View {
                 if samplingModeTag == "topK" {
                     Stepper("Top K: \(topKValue)", value: $topKValue, in: 1...100)
                 }
-
-                Toggle("Limit response length", isOn: $limitResponseTokens)
-
-                if limitResponseTokens {
-                    Stepper("Max tokens: \(maxResponseTokens)", value: $maxResponseTokens, in: 50...2000, step: 50)
-                }
             }
         }
         .formStyle(.grouped)
@@ -861,8 +837,7 @@ struct AddPromptSheet: View {
                         systemPrompt: systemPrompt,
                         userTemplate: userTemplate,
                         temperature: temperature,
-                        samplingMode: currentSamplingMode,
-                        maxResponseTokens: limitResponseTokens ? maxResponseTokens : nil
+                        samplingMode: currentSamplingMode
                     )
                     onAdd(prompt)
                     dismiss()
