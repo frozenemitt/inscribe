@@ -93,11 +93,25 @@ final class MeetingAudioWriter: @unchecked Sendable {
 
     private(set) var fileName: String?
 
+    private var openFailure: String?
+
+    /// Why the recording file could not be opened, if it could not.
+    ///
+    /// Kept for the recorder to report. Without it the meeting ended saying "No
+    /// recording was kept", as though the user had switched recording off, and the
+    /// reason reached only the log.
+    var failure: String? {
+        lock.lock()
+        defer { lock.unlock() }
+        return openFailure
+    }
+
     /// Begin a recording, returning the file name to store on the meeting.
     func begin() -> String {
         let name = "\(UUID().uuidString).m4a"
         fileName = name
         file = nil
+        openFailure = nil
         return name
     }
 
@@ -127,6 +141,7 @@ final class MeetingAudioWriter: @unchecked Sendable {
                 )
             } catch {
                 Self.log.error("Could not open the recording file: \(error, privacy: .public)")
+                openFailure = error.localizedDescription
                 self.fileName = nil
                 return
             }

@@ -369,6 +369,31 @@ final class MeetingRecorder {
         meeting.rawTranscript = liveTranscript
         meeting.recordedDuration = recordedSeconds
         meeting.modelContext?.saveOrLog()
+
+        // Checked here as well as at the end, so a failure shows while the meeting is
+        // still running rather than only after it has ended.
+        reportEngineError()
+        reportRecordingFailure()
+    }
+
+    /// Copy a failure the engine recorded into `lastError`.
+    ///
+    /// The engine keeps a recognizer failure mid-session, or a finalize that overran
+    /// its limit and lost the tail, in its own `error`. The meeting never read it, so
+    /// the transcript stopped growing, or lost its ending, with nothing on screen to
+    /// say so. Read right after each stop, before anything else can start the engine
+    /// and clear it, and at each checkpoint while the meeting owns it.
+    private func reportEngineError() {
+        if let error = engine.error {
+            lastError = error.localizedDescription
+        }
+    }
+
+    /// Copy a recording file that failed to open into `lastError`.
+    private func reportRecordingFailure() {
+        if let failure = audioWriter.failure {
+            lastError = "The recording could not be saved: \(failure)"
+        }
     }
 
     /// The device this meeting records from.
@@ -484,6 +509,7 @@ final class MeetingRecorder {
         engine.audioTap = nil
 
         let transcript = (try? await engine.stopRecording(owner: .meeting)) ?? engine.currentTranscript
+        reportEngineError()
         harvestSession(transcript: transcript)
 
         // Turned off only once the session is harvested. The engine reads this flag on
@@ -625,6 +651,7 @@ final class MeetingRecorder {
             engine.audioTap = nil
 
             let transcript = (try? await engine.stopRecording(owner: .meeting)) ?? engine.currentTranscript
+            reportEngineError()
             harvestSession(transcript: transcript)
 
             // After the harvest, as in pause(): the stop is what makes the last words
@@ -638,6 +665,7 @@ final class MeetingRecorder {
         meeting.endedAt = Date()
         meeting.recordedDuration = completedAudioSeconds
         meeting.audioFileName = audioWriter.finish()
+        reportRecordingFailure()
         meeting.rawTranscript = TextProcessor.process(
             accumulatedTranscript,
             replacements: settings.wordReplacements
