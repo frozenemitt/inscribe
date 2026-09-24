@@ -36,7 +36,9 @@ struct MeetingsView: View {
                 sidebar
             }
         } detail: {
-            if let meeting = selection ?? recorder.activeMeeting {
+            // A deleted meeting is never shown. See the state change below.
+            if let meeting = selection ?? recorder.activeMeeting,
+               !meeting.isDeleted, meeting.modelContext != nil {
                 // A new view per meeting. Reused, it carried the previous meeting's
                 // summary state across: click Generate on one, click another, and the
                 // second one's button span and stayed disabled until the first
@@ -56,6 +58,22 @@ struct MeetingsView: View {
         .onChange(of: recorder.activeMeeting) { _, meeting in
             // Follow the meeting being recorded, so the live transcript is on screen.
             if let meeting { selection = meeting }
+        }
+        .onChange(of: recorder.state) { _, _ in
+            // A start that fails deletes the meeting it had inserted, which the list
+            // showed, and let the user select, while it was preparing. Left selected,
+            // the detail view went on reading a deleted model and could crash.
+            if let selection, selection.isDeleted || selection.modelContext == nil {
+                self.selection = nil
+            }
+        }
+        .onChange(of: selection) { _, _ in
+            // The recorder's error belongs to the meeting it happened in. Once the user
+            // picks another, it would only mislead there. A running meeting keeps its
+            // error, since its live section and panel still need it.
+            if recorder.state == .idle {
+                recorder.clearError()
+            }
         }
     }
 
@@ -208,10 +226,12 @@ private struct MeetingDetailView: View {
     @Bindable var meeting: Meeting
 
     @Environment(MeetingRecorder.self) private var recorder
+    @Environment(AppSettings.self) private var settings
     @Environment(\.modelContext) private var modelContext
 
     @State private var isSummarizing = false
     @State private var summaryError: String?
+    @State private var exportError: String?
     @State private var splitTarget: Utterance?
     @State private var player = MeetingPlayer()
 
@@ -225,7 +245,10 @@ private struct MeetingDetailView: View {
                 if isLive {
                     liveTranscript
                 } else {
-                    if let error = recorder.lastError, meeting.utterances.isEmpty {
+                    // Shown whether or not the meeting has speakers. Hidden once there
+                    // were utterances, it kept quiet about a recognizer failure or a
+                    // recording that could not be saved in any meeting that had any.
+                    if let error = recorder.lastError {
                         Label(error, systemImage: "exclamationmark.triangle")
                             .font(.caption)
                             .foregroundStyle(.orange)
@@ -248,6 +271,18 @@ private struct MeetingDetailView: View {
             player.load(fileName: meeting.audioFileName)
         }
         .onDisappear { player.unload() }
+        .alert(
+            "Export Failed",
+            isPresented: Binding(
+                get: { exportError != nil },
+                set: { if !$0 { exportError = nil } }
+            ),
+            presenting: exportError
+        ) { _ in
+            Button("OK") {}
+        } message: { message in
+            Text(message)
+        }
         .sheet(item: $splitTarget) { utterance in
             SplitUtteranceSheet(meeting: meeting, utterance: utterance) { offset, speaker in
                 _ = meeting.split(
@@ -312,23 +347,75 @@ private struct MeetingDetailView: View {
 
     private var liveTranscript: some View {
         VStack(alignment: .leading, spacing: 12) {
-            if recorder.isPaused {
+            switch recorder.state {
+            case .finishing:
+                // Separating speakers and saving takes a while on a long meeting, and
+                // a pulsing "Recording" through all of it read as still listening.
+                Label {
+                    Text("Saving…")
+                } icon: {
+                    ProgressView().controlSize(.small)
+                }
+            case .paused:
                 Label("Paused", systemImage: "pause.circle.fill")
                     .foregroundStyle(.orange)
-            } else {
+            default:
                 Label("Recording", systemImage: "record.circle.fill")
                     .foregroundStyle(.red)
                     .symbolEffect(.pulse, options: .repeating)
             }
 
-            Text(recorder.liveTranscript.isEmpty ? "Listening…" : recorder.liveTranscript)
+            // Errors during a meeting used to be set and never shown: a diarizer that
+            // would not load, system audio that would not start, a recognizer that
+            // failed part way.
+            if let error = recorder.lastError {
+                Label(error, systemImage: "exclamationmark.triangle")
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+            }
+
+            // Only while capturing. Teardown clears the flag during the save, and the
+            // note would flash up at the very end of every meeting.
+            if settings.captureSystemAudioInMeetings, !recorder.systemAudioActive,
+               recorder.state == .recording || recorder.state == .paused {
+                Label("Microphone only. System audio is not being recorded, so other people on a call are not transcribed.",
+                      systemImage: "mic")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            let live = recorder.liveTranscript
+            Text(live.isEmpty ? "Listening…" : Self.tail(of: live))
                 .textSelection(.enabled)
-                .foregroundStyle(recorder.liveTranscript.isEmpty ? .secondary : .primary)
+                .foregroundStyle(live.isEmpty ? .secondary : .primary)
 
             Text("Speakers are separated once the meeting ends — attribution needs the whole recording to tell voices apart reliably.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
+    }
+
+    /// The end of a live transcript: its last few hundred words, marked as cut.
+    ///
+    /// The live text changes several times a second, and each change laid out the
+    /// whole meeting again, which on a long meeting kept the main thread busy for as
+    /// long as it ran. The end is what anyone reads while it grows; the whole of it is
+    /// in the meeting once it stops.
+    private static func tail(of text: String, words: Int = 300) -> String {
+        var index = text.endIndex
+        var spaces = 0
+
+        while index > text.startIndex {
+            let previous = text.index(before: index)
+            if text[previous] == " " {
+                spaces += 1
+                if spaces == words {
+                    return "…" + text[index...]
+                }
+            }
+            index = previous
+        }
+        return text
     }
 
     @ViewBuilder
@@ -347,7 +434,10 @@ private struct MeetingDetailView: View {
                     .font(.caption)
                 }
 
-                ForEach(meeting.speakers.sorted { $0.generatedLabel < $1.generatedLabel }) { speaker in
+                // Here and in the menus below, labels are compared as Finder compares
+                // names, numbers by value. Plain string order put "Speaker 10" before
+                // "Speaker 2".
+                ForEach(meeting.speakers.sorted { $0.generatedLabel.localizedStandardCompare($1.generatedLabel) == .orderedAscending }) { speaker in
                     HStack {
                         Text(speaker.generatedLabel)
                             .font(.caption)
@@ -417,7 +507,7 @@ private struct MeetingDetailView: View {
                 Text(summary)
                     .textSelection(.enabled)
             } else if summaryError == nil {
-                Text("Runs the transcript through your selected prompt, on-device.")
+                Text("Summarizes the transcript on-device, in parts if it is long.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -435,46 +525,54 @@ private struct MeetingDetailView: View {
                     .foregroundStyle(.secondary)
 
                 let hasAudio = meeting.hasAudio
+                // Read once for every line. The player changes it only when playback
+                // crosses into another utterance, so this view redraws then and not
+                // on every tick of the clock.
+                let playingID = player.playingUtteranceID
 
-                ForEach(meeting.orderedUtterances) { utterance in
-                    VStack(alignment: .leading, spacing: 3) {
-                        HStack(spacing: 6) {
-                            speakerMenu(for: utterance)
+                // Lazy, so a long meeting builds only the lines on screen.
+                LazyVStack(alignment: .leading, spacing: 14) {
+                    ForEach(meeting.orderedUtterances) { utterance in
+                        VStack(alignment: .leading, spacing: 3) {
+                            HStack(spacing: 6) {
+                                speakerMenu(for: utterance)
 
-                            // Hearing the moment is the only way to know whether an
-                            // attribution is right, so the timestamp plays it.
-                            if hasAudio {
-                                Button {
-                                    player.load(fileName: meeting.audioFileName)
-                                    player.play(from: utterance)
-                                } label: {
-                                    HStack(spacing: 3) {
-                                        Image(systemName: "play.circle")
-                                        Text(utterance.timestampLabel)
-                                            .monospacedDigit()
+                                // Hearing the moment is the only way to know whether an
+                                // attribution is right, so the timestamp plays it.
+                                if hasAudio {
+                                    Button {
+                                        player.load(fileName: meeting.audioFileName)
+                                        player.follow(meeting.orderedUtterances)
+                                        player.play(from: utterance)
+                                    } label: {
+                                        HStack(spacing: 3) {
+                                            Image(systemName: "play.circle")
+                                            Text(utterance.timestampLabel)
+                                                .monospacedDigit()
+                                        }
+                                        .font(.caption)
                                     }
-                                    .font(.caption)
-                                }
-                                .buttonStyle(.plain)
-                                .foregroundStyle(.secondary)
-                                .help("Play from here")
-                            } else {
-                                Text(utterance.timestampLabel)
-                                    .font(.caption)
+                                    .buttonStyle(.plain)
                                     .foregroundStyle(.secondary)
-                                    .monospacedDigit()
+                                    .help("Play from here")
+                                } else {
+                                    Text(utterance.timestampLabel)
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                        .monospacedDigit()
+                                }
                             }
+                            Text(utterance.text)
+                                .textSelection(.enabled)
                         }
-                        Text(utterance.text)
-                            .textSelection(.enabled)
+                        .padding(.vertical, 3)
+                        .padding(.horizontal, 6)
+                        .background(
+                            RoundedRectangle(cornerRadius: 5)
+                                .fill(utterance.persistentModelID == playingID
+                                      ? Color.accentColor.opacity(0.12) : .clear)
+                        )
                     }
-                    .padding(.vertical, 3)
-                    .padding(.horizontal, 6)
-                    .background(
-                        RoundedRectangle(cornerRadius: 5)
-                            .fill(player.isPlaying(utterance)
-                                  ? Color.accentColor.opacity(0.12) : .clear)
-                    )
                 }
             } else if meeting.rawTranscript.isEmpty {
                 Text("No transcript was captured.")
@@ -493,41 +591,7 @@ private struct MeetingDetailView: View {
     @ViewBuilder
     private var playbackBar: some View {
         if meeting.hasAudio {
-            HStack(spacing: 12) {
-                Button {
-                    player.load(fileName: meeting.audioFileName)
-                    player.togglePlayPause()
-                } label: {
-                    Image(systemName: player.isPlaying ? "pause.circle.fill" : "play.circle.fill")
-                        .font(.title2)
-                }
-                .buttonStyle(.plain)
-
-                Text(MeetingPlayer.timeLabel(player.currentTime))
-                    .font(.caption)
-                    .monospacedDigit()
-                    .foregroundStyle(.secondary)
-
-                Slider(
-                    value: Binding(
-                        get: { player.currentTime },
-                        set: { player.seek(to: $0) }
-                    ),
-                    in: 0...max(player.duration, 1)
-                )
-
-                Text(MeetingPlayer.timeLabel(player.duration))
-                    .font(.caption)
-                    .monospacedDigit()
-                    .foregroundStyle(.secondary)
-
-                Text(MeetingAudioStore.formatted(bytes: MeetingAudioStore.size(ofFileNamed: meeting.audioFileName)))
-                    .font(.caption2)
-                    .foregroundStyle(.tertiary)
-            }
-            .padding(10)
-            .background(RoundedRectangle(cornerRadius: 8).fill(Color.secondary.opacity(0.08)))
-            .onAppear { player.load(fileName: meeting.audioFileName) }
+            PlaybackBar(meeting: meeting, player: player)
         } else if meeting.endedAt != nil {
             Text("No recording was kept for this meeting.")
                 .font(.caption)
@@ -541,7 +605,7 @@ private struct MeetingDetailView: View {
     private func speakerMenu(for utterance: Utterance) -> some View {
         Menu {
             Section("Attribute to") {
-                ForEach(meeting.speakers.sorted { $0.generatedLabel < $1.generatedLabel }) { speaker in
+                ForEach(meeting.speakers.sorted { $0.generatedLabel.localizedStandardCompare($1.generatedLabel) == .orderedAscending }) { speaker in
                     Button {
                         meeting.reassign(utterance, to: speaker)
                         finishCorrection()
@@ -605,7 +669,10 @@ private struct MeetingDetailView: View {
 
     private func save(as format: MeetingExporter.Format) {
         let panel = NSSavePanel()
-        panel.nameFieldStringValue = "\(meeting.title).\(format.fileExtension)"
+        // Colons replaced. Every default title carries a time, "14:30", and Finder
+        // shows a colon in a file name as a slash.
+        let name = meeting.title.replacingOccurrences(of: ":", with: ".")
+        panel.nameFieldStringValue = "\(name).\(format.fileExtension)"
         panel.canCreateDirectories = true
 
         guard panel.runModal() == .OK, let url = panel.url else { return }
@@ -613,7 +680,68 @@ private struct MeetingDetailView: View {
         do {
             try MeetingExporter.export(meeting, as: format).write(to: url, atomically: true, encoding: .utf8)
         } catch {
+            // Said on screen. Only logged, a failed export looked like a successful one.
             Log.meetings.error("Export failed: \(error, privacy: .public)")
+            exportError = error.localizedDescription
+        }
+    }
+}
+
+// MARK: - Playback Bar
+
+/// Play, pause and scrub a meeting's recording.
+///
+/// A view of its own because it reads the playback time, which changes four times a
+/// second. Read in the detail view's body, that time redrew the whole transcript
+/// with it.
+private struct PlaybackBar: View {
+    let meeting: Meeting
+    let player: MeetingPlayer
+
+    var body: some View {
+        HStack(spacing: 12) {
+            Button {
+                player.load(fileName: meeting.audioFileName)
+                player.follow(meeting.orderedUtterances)
+                player.togglePlayPause()
+            } label: {
+                Image(systemName: player.isPlaying ? "pause.circle.fill" : "play.circle.fill")
+                    .font(.title2)
+            }
+            .buttonStyle(.plain)
+
+            Text(MeetingPlayer.timeLabel(player.currentTime))
+                .font(.caption)
+                .monospacedDigit()
+                .foregroundStyle(.secondary)
+
+            Slider(
+                value: Binding(
+                    get: { player.currentTime },
+                    set: { player.seek(to: $0) }
+                ),
+                in: 0...max(player.duration, 1)
+            )
+
+            Text(MeetingPlayer.timeLabel(player.duration))
+                .font(.caption)
+                .monospacedDigit()
+                .foregroundStyle(.secondary)
+
+            Text(MeetingAudioStore.formatted(bytes: MeetingAudioStore.size(ofFileNamed: meeting.audioFileName)))
+                .font(.caption2)
+                .foregroundStyle(.tertiary)
+        }
+        .padding(10)
+        .background(RoundedRectangle(cornerRadius: 8).fill(Color.secondary.opacity(0.08)))
+        .onAppear { player.load(fileName: meeting.audioFileName) }
+
+        // A recording that will not open used to leave a bar whose button did
+        // nothing, with the reason only in the log.
+        if let error = player.lastError {
+            Label("The recording could not be opened: \(error)", systemImage: "exclamationmark.triangle")
+                .font(.caption)
+                .foregroundStyle(.orange)
         }
     }
 }
@@ -674,7 +802,7 @@ private struct SplitUtteranceSheet: View {
 
             Picker("Second half is", selection: $tailSpeaker) {
                 Text("A new speaker").tag(nil as MeetingSpeaker?)
-                ForEach(meeting.speakers.sorted { $0.generatedLabel < $1.generatedLabel }) { speaker in
+                ForEach(meeting.speakers.sorted { $0.generatedLabel.localizedStandardCompare($1.generatedLabel) == .orderedAscending }) { speaker in
                     Text(speaker.resolvedName).tag(speaker as MeetingSpeaker?)
                 }
             }

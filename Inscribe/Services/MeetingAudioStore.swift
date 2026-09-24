@@ -39,6 +39,15 @@ final class MeetingAudioStore {
         return FileManager.default.fileExists(atPath: url(forFileNamed: name).path)
     }
 
+    /// Whether AVAudioPlayer can open the recording.
+    ///
+    /// A recording whose writer was never closed, because the app crashed or was force
+    /// quit mid-meeting, exists and holds audio but has no index, and nothing plays it.
+    static func isPlayable(fileNamed name: String?) -> Bool {
+        guard let name, fileExists(named: name) else { return false }
+        return (try? AVAudioPlayer(contentsOf: url(forFileNamed: name))) != nil
+    }
+
     static func delete(fileNamed name: String?) {
         guard let name else { return }
         try? FileManager.default.removeItem(at: url(forFileNamed: name))
@@ -84,11 +93,25 @@ final class MeetingAudioWriter: @unchecked Sendable {
 
     private(set) var fileName: String?
 
+    private var openFailure: String?
+
+    /// Why the recording file could not be opened, if it could not.
+    ///
+    /// Kept for the recorder to report. Without it the meeting ended saying "No
+    /// recording was kept", as though the user had switched recording off, and the
+    /// reason reached only the log.
+    var failure: String? {
+        lock.lock()
+        defer { lock.unlock() }
+        return openFailure
+    }
+
     /// Begin a recording, returning the file name to store on the meeting.
     func begin() -> String {
         let name = "\(UUID().uuidString).m4a"
         fileName = name
         file = nil
+        openFailure = nil
         return name
     }
 
@@ -118,6 +141,7 @@ final class MeetingAudioWriter: @unchecked Sendable {
                 )
             } catch {
                 Self.log.error("Could not open the recording file: \(error, privacy: .public)")
+                openFailure = error.localizedDescription
                 self.fileName = nil
                 return
             }
@@ -145,6 +169,10 @@ final class MeetingAudioWriter: @unchecked Sendable {
 
         if converter == nil || converter?.inputFormat != buffer.format {
             converter = AVAudioConverter(from: buffer.format, to: format)
+            // Mixed rather than remapped. Remapping three channels to two keeps the
+            // first two and drops the third, so one side of the system audio never
+            // reached the recording.
+            converter?.downmix = true
         }
         guard let converter else { return nil }
 

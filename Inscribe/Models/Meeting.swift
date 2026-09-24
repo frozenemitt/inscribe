@@ -60,8 +60,13 @@ final class Meeting {
 
     /// Whether the user paused at any point, worth showing since the two durations
     /// then disagree.
+    ///
+    /// False while the meeting is still open. Its recorded length is saved only every
+    /// half minute, while the wall clock keeps running, so the two disagree between
+    /// saves whether or not anyone paused.
     var wasPaused: Bool {
-        recordedDuration > 0 && duration - recordedDuration > 1
+        guard endedAt != nil else { return false }
+        return recordedDuration > 0 && duration - recordedDuration > 1
     }
 
     /// Utterances in spoken order.

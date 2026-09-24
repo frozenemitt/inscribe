@@ -77,14 +77,22 @@ actor MeetingDiarizer {
     func prepare() async throws {
         guard manager == nil else { return }
 
-        // Checked first so `downloadIfNeeded` finds the files already there and loads
-        // them from disk. Starting a meeting must not reach the network: the models are
-        // installed from Settings, deliberately, before any of this runs.
+        // Starting a meeting must not reach the network: the models are installed from
+        // Settings, deliberately, before any of this runs.
         guard DiarizationModelStore.isInstalled else {
             throw DiarizationModelStore.ModelStoreError.notInstalled
         }
 
-        let models = try await DiarizerModels.downloadIfNeeded()
+        // Loaded straight from the two model folders, never through
+        // `downloadIfNeeded`. That call treats a model it cannot load as corrupt,
+        // deletes it and fetches it again from HuggingFace, which turned a meeting
+        // start into a download. A model that fails to load here throws instead, and
+        // the meeting goes on without speaker labels.
+        let directory = DiarizationModelStore.modelsDirectory
+        let models = try DiarizerModels.load(
+            localSegmentationModel: directory.appendingPathComponent(ModelNames.Diarizer.segmentationFile),
+            localEmbeddingModel: directory.appendingPathComponent(ModelNames.Diarizer.embeddingFile)
+        )
 
         let manager = DiarizerManager(config: .default)
         manager.initialize(models: models)
@@ -217,6 +225,9 @@ enum AudioFileSamples {
         guard let converter = AVAudioConverter(from: file.processingFormat, to: target) else {
             throw AudioFileError.unsupportedFormat
         }
+        // Mixed to mono rather than remapped, which keeps only the first channel: a
+        // call recorded with each side on its own channel would lose one side.
+        converter.downmix = true
 
         // Read in chunks so an hour-long file does not arrive as one enormous buffer.
         let framesPerChunk: AVAudioFrameCount = 1 << 16
@@ -302,6 +313,10 @@ final class DiarizationAudioConverter: @unchecked Sendable {
 
         if converter == nil || sourceFormat != inputFormat {
             converter = AVAudioConverter(from: inputFormat, to: targetFormat)
+            // Mixed, not remapped. Without this the converter keeps channel 0 and drops
+            // the rest, and with system audio on, channel 0 is the microphone: the
+            // diarizer never heard anyone on the call.
+            converter?.downmix = true
             sourceFormat = inputFormat
         }
         guard let converter else { return nil }

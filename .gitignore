@@ -76,6 +76,13 @@ xcuserdata/
 **/*.xcodeproj/project.xcworkspace/xcshareddata/*
 !**/*.xcodeproj/project.xcworkspace/xcshareddata/WorkspaceSettings.xcsettings
 
+# Package.resolved is committed, so every checkout builds the FluidAudio revision the
+# project pins rather than whatever a fresh resolve finds. The rest of the swiftpm
+# folder stays ignored.
+!**/*.xcodeproj/project.xcworkspace/xcshareddata/swiftpm
+**/*.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/*
+!**/*.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved
+
 **/*.playground/playground.xcworkspace/*
 !**/*.playground/playground.xcworkspace/xcshareddata
 

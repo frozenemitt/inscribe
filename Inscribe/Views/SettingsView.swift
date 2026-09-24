@@ -1918,7 +1918,7 @@ struct DiarizationModelsSection: View {
                     } else {
                         // Always reachable: a check that reports a problem must leave
                         // the user something to press.
-                        Button(isUpdating ? "Removing..." : "Re-download Models") { update() }
+                        Button(isUpdating ? "Downloading..." : "Re-download Models") { update() }
                             .disabled(isChecking || isUpdating)
                     }
                 }
@@ -1927,7 +1927,7 @@ struct DiarizationModelsSection: View {
                     resultLabel(checkResult)
                 }
 
-                Text("Checking verifies every installed file against the content hash HuggingFace publishes — SHA-256 for model weights, git blob hashes for the rest. No audio or transcript leaves your Mac; it reads public metadata only. Re-downloading removes the local copies so the next meeting fetches them fresh.")
+                Text("Checking verifies every installed file against the content hash HuggingFace publishes — SHA-256 for model weights, git blob hashes for the rest. No audio or transcript leaves your Mac; it reads public metadata only. Re-downloading fetches fresh copies now and replaces the local ones; if the download fails, the current copies stay.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -2085,21 +2085,21 @@ struct DiarizationModelsSection: View {
         }
     }
 
-    /// Remove the local copies so the next meeting fetches fresh ones.
+    /// Replace the local copies with fresh ones, now.
     ///
-    /// Deleting rather than overwriting: FluidAudio skips any file already on disk, so
-    /// a stale copy would survive a re-download untouched.
+    /// This used to remove them and leave the fetch to the next meeting, which is not
+    /// allowed to download, so that meeting recorded without speakers.
     private func update() {
         isUpdating = true
 
         Task {
             do {
-                try DiarizationModelStore.removeLocalCopies()
+                try await DiarizationModelStore.reinstall()
                 checkResult = nil
-                refresh()
             } catch {
                 checkResult = .failed(error.localizedDescription)
             }
+            refresh()
             isUpdating = false
         }
     }
@@ -2116,6 +2116,10 @@ struct MeetingAudioSection: View {
     @State private var permissionChecked = false
     @State private var hasPermission = false
 
+    /// Disk used by saved recordings, measured once when the section appears. Read in
+    /// the body, it listed the recordings folder twice on every redraw.
+    @State private var recordingsSize: Int64 = 0
+
     var body: some View {
         @Bindable var settings = settings
 
@@ -2126,8 +2130,8 @@ struct MeetingAudioSection: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
 
-            if MeetingAudioStore.totalSize() > 0 {
-                Text("Recordings currently use \(MeetingAudioStore.formatted(bytes: MeetingAudioStore.totalSize())).")
+            if recordingsSize > 0 {
+                Text("Recordings currently use \(MeetingAudioStore.formatted(bytes: recordingsSize)).")
                     .font(.caption)
                     .foregroundStyle(.tertiary)
             }
@@ -2170,6 +2174,7 @@ struct MeetingAudioSection: View {
                     .foregroundStyle(.orange)
             }
         }
+        .onAppear { recordingsSize = MeetingAudioStore.totalSize() }
     }
 }
 #endif
