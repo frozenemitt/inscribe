@@ -1454,7 +1454,15 @@ struct AboutSettingsView: View {
     }
 
     private func reload() {
-        entries = (try? Diagnostics.recent()) ?? []
+        // Diagnostics.recent() walks the unified log, which can take real time on
+        // a busy run — off the main actor so opening this disclosure group does
+        // not stall the rest of the Settings window while it works.
+        Task {
+            let fetched = await Task.detached(priority: .utility) {
+                (try? Diagnostics.recent()) ?? []
+            }.value
+            entries = fetched
+        }
     }
 
     @State private var entries: [Diagnostics.Entry] = []
