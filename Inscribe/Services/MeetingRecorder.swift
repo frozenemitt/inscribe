@@ -399,10 +399,15 @@ final class MeetingRecorder {
         // dictation taken during the pause — is not written into this meeting's
         // recording and fed to its diarizer, shifting every later timestamp.
         engine.audioTap = nil
-        engine.collectTimedSegments = false
 
         let transcript = (try? await engine.stopRecording(owner: .meeting)) ?? engine.currentTranscript
         harvestSession(transcript: transcript)
+
+        // Turned off only once the session is harvested. The engine reads this flag on
+        // every final result, and the stop's finalize step is exactly when the last
+        // words before the pause become final; switched off before the stop, they
+        // reached the plain transcript and never the speaker transcript.
+        engine.collectTimedSegments = false
 
         await drainDiarizerFeed()
 
@@ -533,10 +538,13 @@ final class MeetingRecorder {
             // pause(): this session keeps its own fan-out, and anything started
             // afterwards must not be recorded into this meeting.
             engine.audioTap = nil
-            engine.collectTimedSegments = false
 
             let transcript = (try? await engine.stopRecording(owner: .meeting)) ?? engine.currentTranscript
             harvestSession(transcript: transcript)
+
+            // After the harvest, as in pause(): the stop is what makes the last words
+            // final, and they are only collected while this is on.
+            engine.collectTimedSegments = false
         }
 
         await drainDiarizerFeed()
