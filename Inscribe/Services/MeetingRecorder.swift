@@ -86,6 +86,20 @@ final class MeetingRecorder {
     /// report the meeting written and let the app terminate through the middle of it.
     private var finishTask: Task<Void, Never>?
 
+    /// The pause or resume begun by `pause()` or `resume()`, while it is still running.
+    ///
+    /// Either one takes a few hundred milliseconds of engine work, and the state does not
+    /// change until it is over. Without this, a second click in that window passed the
+    /// state guard and ran the same step again: two resumes started the engine twice, and
+    /// two pauses harvested the same session twice and doubled every word. A stop or a
+    /// quit arriving in that window tore the meeting down underneath the step, which then
+    /// finished against a meeting that no longer existed. Pause and resume refuse to begin
+    /// while this is set, and stop waits for it.
+    ///
+    /// Cleared by the task itself as its last act, on the main actor, so a stop waiting on
+    /// it never sees it cleared late and never mistakes a finished step for one running.
+    private var transitionTask: Task<Void, Never>?
+
     /// Ordered handoff of captured audio to the diarizer.
     ///
     /// The tap runs on the audio thread and the diarizer is an actor, so the handoff
@@ -368,8 +382,17 @@ final class MeetingRecorder {
     /// left alive: it holds the speaker embeddings that let someone who talked before
     /// the pause keep their identity after it.
     func pause() async {
-        guard state == .recording else { return }
+        guard state == .recording, transitionTask == nil else { return }
 
+        let task = Task {
+            await self.performPause()
+            self.transitionTask = nil
+        }
+        transitionTask = task
+        await task.value
+    }
+
+    private func performPause() async {
         // Disconnected before the stop is awaited, not after. The engine reads
         // `audioTap` once when a session starts, so clearing it here leaves this
         // session's own fan-out intact while making sure the next session — a
@@ -390,8 +413,17 @@ final class MeetingRecorder {
 
     /// Start capturing again, continuing the same meeting.
     func resume() async {
-        guard state == .paused else { return }
+        guard state == .paused, transitionTask == nil else { return }
 
+        let task = Task {
+            await self.performResume()
+            self.transitionTask = nil
+        }
+        transitionTask = task
+        await task.value
+    }
+
+    private func performResume() async {
         // Anchor the new session to the diarizer's clock, which counts only audio it
         // has actually received — the same quantity the transcript timestamps measure.
         sessionOffset = diarizationActive ? await diarizer.receivedSeconds : completedAudioSeconds
@@ -464,6 +496,14 @@ final class MeetingRecorder {
         // meeting, or there is nothing left to stop.
         if state == .preparing {
             await startTask?.value
+        }
+
+        // Likewise a pause or resume in flight. Each ends in a settled state, recording
+        // or paused, and this stop then ends the meeting from there. Looped because
+        // another click can begin a new step in the moment between one finishing and
+        // this carrying on.
+        while let transition = transitionTask {
+            await transition.value
         }
 
         // Quitting calls this while the Stop button's save is still running. That
