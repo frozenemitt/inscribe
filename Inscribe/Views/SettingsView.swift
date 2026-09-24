@@ -1,4 +1,5 @@
 import SwiftUI
+import SwiftData
 import UniformTypeIdentifiers
 import Combine
 
@@ -98,6 +99,7 @@ struct SettingsView: View {
 struct GeneralSettingsView: View {
     @Environment(AppSettings.self) private var settings
     @Environment(PromptConfiguration.self) private var promptConfig
+    @Environment(\.modelContext) private var modelContext
     #if os(macOS)
     @Environment(GlobalHotkeyMonitor.self) private var hotkeyMonitor
     #endif
@@ -112,9 +114,18 @@ struct GeneralSettingsView: View {
                 Toggle("Enable AI Processing", isOn: $settings.aiEnabled)
 
                 if settings.aiEnabled {
+                    if let reason = AIProcessor.unavailabilityReason {
+                        Label(reason, systemImage: "exclamationmark.triangle")
+                            .font(.caption)
+                            .foregroundStyle(.orange)
+                    }
+
                     Picker("Default Prompt", selection: $settings.selectedPromptId) {
                         Text("Clean Up (Default)").tag(nil as UUID?)
-                        ForEach(promptConfig.prompts) { prompt in
+                        // The default prompt is already the "Clean Up (Default)" row
+                        // above; listing it again here under its own name duplicated
+                        // "Clean Up" in the picker.
+                        ForEach(promptConfig.prompts.filter { $0.id != PromptConfiguration.defaultPromptId }) { prompt in
                             Text(prompt.name).tag(prompt.id as UUID?)
                         }
                     }
@@ -142,6 +153,14 @@ struct GeneralSettingsView: View {
                     Stepper(value: $settings.dictationHistoryLimit, in: 10...500, step: 10) {
                         Text("Keep the last \(settings.dictationHistoryLimit)")
                             .monospacedDigit()
+                    }
+                    // Otherwise a lower limit only takes effect the next time a
+                    // dictation is recorded, since pruning normally happens as a
+                    // side effect of saving a new entry — which could be a long
+                    // wait for a setting the user just changed on purpose.
+                    .onChange(of: settings.dictationHistoryLimit) { _, newLimit in
+                        DictationHistory.prune(to: newLimit, in: modelContext)
+                        modelContext.saveOrLog()
                     }
                 }
 
