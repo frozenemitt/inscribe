@@ -417,7 +417,7 @@ private struct MeetingDetailView: View {
                 Text(summary)
                     .textSelection(.enabled)
             } else if summaryError == nil {
-                Text("Runs the transcript through your selected prompt, on-device.")
+                Text("Summarizes the transcript on-device, in parts if it is long.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }

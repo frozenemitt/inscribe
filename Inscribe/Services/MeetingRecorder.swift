@@ -1,4 +1,5 @@
 import Foundation
+import FoundationModels
 import os
 import Observation
 import SwiftData
@@ -740,18 +741,120 @@ final class MeetingRecorder {
 
     // MARK: - Summary
 
-    /// Generate an AI summary for a finished meeting.
-    func summarize(_ meeting: Meeting, in context: ModelContext) async throws {
-        let body = MeetingExporter.plainText(meeting)
-        guard !body.isEmpty else { return }
+    /// The built-in "Summarize" prompt.
+    ///
+    /// A meeting summary used to run whatever prompt was chosen for dictation, which is
+    /// usually a cleanup pass and handed back the transcript tidied, not summarized.
+    private static let summarizePromptId = UUID(uuidString: "00000000-0000-0000-0000-000000000002")!
 
-        let summary = try await aiProcessor.process(text: body, promptId: settings.selectedPromptId)
+    /// Generate an AI summary for a finished meeting.
+    ///
+    /// The on-device model reads only so much at once, and a transcript of more than
+    /// about a quarter of an hour used to exceed it and fail. A transcript too long for
+    /// one request is summarized in pieces that each fit, and the piece summaries are
+    /// then summarized together, as many rounds as it takes to fit in one request.
+    func summarize(_ meeting: Meeting, in context: ModelContext) async throws {
+        var text = MeetingExporter.plainText(meeting)
+        guard !text.isEmpty else { return }
+
+        let budget = Self.summaryInputBudget
+
+        while true {
+            let tokens = await Self.estimatedTokens(in: text)
+            guard tokens > budget else { break }
+
+            // Characters per token for this text, measured rather than assumed, with a
+            // tenth held back because the pieces will not all tokenize alike.
+            let charactersPerToken = Double(text.count) / Double(max(tokens, 1))
+            let pieceLimit = max(1, Int(Double(budget) * charactersPerToken * 0.9))
+
+            var summaries: [String] = []
+            for piece in Self.pieces(of: text, limit: pieceLimit) {
+                summaries.append(try await aiProcessor.process(text: piece, promptId: Self.summarizePromptId))
+                guard !meeting.isDeleted else { return }
+            }
+
+            // A round that fails to shorten the text would repeat for ever. The last
+            // request below then reports the overflow as it always has.
+            let combined = summaries.joined(separator: "\n\n")
+            guard combined.count < text.count else { break }
+            text = combined
+        }
+
+        let summary = try await aiProcessor.process(text: text, promptId: Self.summarizePromptId)
 
         // The summary takes long enough that the meeting can be deleted while it runs.
         guard !meeting.isDeleted else { return }
 
         meeting.summary = summary
         context.saveOrLog()
+    }
+
+    /// Tokens of transcript one summary request may carry.
+    ///
+    /// Read from the model rather than fixed: the context is 4,096 tokens on macOS 26
+    /// and larger on later systems and other devices. The request also carries the
+    /// instructions, the prompt template and the output schema, about 500 tokens held
+    /// back here, and the reply comes out of the same context. The prompt asks for a
+    /// summary a fifth to a third of the length it reads, so three fifths of what is
+    /// left goes to the transcript and two fifths to the reply.
+    private static var summaryInputBudget: Int {
+        max(256, (SystemLanguageModel.default.contextSize - 512) * 3 / 5)
+    }
+
+    /// How many tokens the model will see in `text`.
+    ///
+    /// Counted by the model where the system can do that, from macOS 26.4. Before that,
+    /// or if counting fails, estimated at three characters a token: English prose runs
+    /// nearer four, but timestamps, names and numbers tokenize worse, and an estimate
+    /// that runs high costs an extra piece where one that runs low costs the summary.
+    private static func estimatedTokens(in text: String) async -> Int {
+        if #available(macOS 26.4, iOS 26.4, *),
+           let counted = try? await SystemLanguageModel.default.tokenCount(for: text) {
+            return counted
+        }
+        return text.count / 3
+    }
+
+    /// Cut `text` into pieces of at most `limit` characters.
+    ///
+    /// Cut between utterances, which the exported transcript separates with a blank
+    /// line, so no line is split from its speaker. A single utterance longer than the
+    /// limit, or a transcript with no speakers at all, is cut between words.
+    private static func pieces(of text: String, limit: Int) -> [String] {
+        var pieces: [String] = []
+        var current = ""
+        var currentLength = 0
+
+        func add(_ part: String, length: Int, separator: String) {
+            if currentLength > 0, currentLength + separator.count + length > limit {
+                pieces.append(current)
+                current = ""
+                currentLength = 0
+            }
+            if currentLength > 0 {
+                current += separator
+                currentLength += separator.count
+            }
+            current += part
+            currentLength += length
+        }
+
+        for paragraph in text.components(separatedBy: "\n\n") {
+            let length = paragraph.count
+            if length <= limit {
+                add(paragraph, length: length, separator: "\n\n")
+            } else {
+                for (index, word) in paragraph.split(separator: " ").enumerated() {
+                    add(String(word), length: word.count, separator: index == 0 ? "\n\n" : " ")
+                }
+            }
+        }
+
+        if currentLength > 0 {
+            pieces.append(current)
+        }
+        return pieces
     }
 
     // MARK: - Teardown
