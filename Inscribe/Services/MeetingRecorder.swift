@@ -33,7 +33,11 @@ final class MeetingRecorder {
     private let diarizer = MeetingDiarizer()
     private let converter = DiarizationAudioConverter()
     private let systemAudio = SystemAudioCapture()
+    private let systemAudioProbe = SystemAudioLevelProbe()
     private let audioWriter = MeetingAudioWriter()
+
+    /// Whether this meeting has had its one look at the system-audio level.
+    private var systemAudioLevelChecked = false
 
     // MARK: - Observable State
 
@@ -319,13 +323,19 @@ final class MeetingRecorder {
             context.saveOrLog()
         }
 
+        systemAudioProbe.reset()
+        systemAudioLevelChecked = false
+
+        // Resolved before the tap is installed: building the system-audio device is
+        // awaited, and nothing should find the tap attached while it is.
+        let inputDeviceUID = await meetingInputDeviceUID()
         installAudioTap()
 
         do {
             try await engine.startRecording(
                 owner: .meeting,
                 contextualStrings: settings.vocabularyHints,
-                inputDeviceUID: meetingInputDeviceUID(),
+                inputDeviceUID: inputDeviceUID,
                 publishesSpectrum: settings.showMeetingIndicator
             )
         } catch {
@@ -378,6 +388,20 @@ final class MeetingRecorder {
         // still running rather than only after it has ended.
         reportEngineError()
         reportRecordingFailure()
+        checkSystemAudioLevel()
+    }
+
+    /// Say so, once, if system audio has been silent through the first minute.
+    ///
+    /// See `SystemAudioLevelProbe`: a refused permission may record silence rather than
+    /// fail, and Settings would still call system audio available.
+    private func checkSystemAudioLevel() {
+        guard systemAudioActive, !systemAudioLevelChecked, recordedSeconds >= 60 else { return }
+        systemAudioLevelChecked = true
+
+        guard !systemAudioProbe.hasHeardSound else { return }
+        lastError = "No system audio has been heard in the first minute. If the call is playing, check that Inscribe is allowed under Screen & System Audio Recording in System Settings."
+        Log.meetings.notice("System audio silent through the first minute")
     }
 
     /// Copy a failure the engine recorded into `lastError`.
@@ -406,7 +430,7 @@ final class MeetingRecorder {
     /// system playback together. Falling back to the plain microphone on failure is
     /// deliberate: half a meeting beats none, and the reason is surfaced rather than
     /// swallowed.
-    private func meetingInputDeviceUID() -> String {
+    private func meetingInputDeviceUID() async -> String {
         guard settings.captureSystemAudioInMeetings else {
             systemAudioActive = false
             return settings.inputDeviceUID
@@ -420,7 +444,12 @@ final class MeetingRecorder {
             let micUID = settings.inputDeviceUID == AudioInputDevice.systemDefaultUID
                 ? nil
                 : settings.inputDeviceUID
-            let uid = try systemAudio.start(microphoneUID: micUID)
+            // Off the main thread: creating the tap and the aggregate device waits on
+            // the audio server, and on the main thread the whole app stalled for it.
+            let capture = systemAudio
+            let uid = try await Task.detached {
+                try capture.start(microphoneUID: micUID)
+            }.value
             systemAudioActive = true
             return uid
         } catch {
@@ -456,6 +485,7 @@ final class MeetingRecorder {
         let wantsDiarization = diarizationActive
         let wantsAudio = keepingAudio
         let audioConverter = converter
+        let probe = systemAudioActive ? systemAudioProbe : nil
 
         let (feed, continuation) = AsyncStream<[Float]>.makeStream()
         diarizerFeed = continuation
@@ -466,6 +496,7 @@ final class MeetingRecorder {
         }
 
         engine.audioTap = { buffer in
+            probe?.inspect(buffer)
             if wantsAudio {
                 writer.append(buffer)
             }
@@ -546,6 +577,10 @@ final class MeetingRecorder {
         // has actually received — the same quantity the transcript timestamps measure.
         sessionOffset = diarizationActive ? await diarizer.receivedSeconds : completedAudioSeconds
 
+        // Resolved before reconnecting, as in begin(): it may await the audio server,
+        // and a dictation started meanwhile must not find this meeting's tap attached.
+        let inputDeviceUID = await meetingInputDeviceUID()
+
         // Reconnected here, having been cleared on pause.
         engine.collectTimedSegments = true
         installAudioTap()
@@ -554,7 +589,7 @@ final class MeetingRecorder {
             try await engine.startRecording(
                 owner: .meeting,
                 contextualStrings: settings.vocabularyHints,
-                inputDeviceUID: meetingInputDeviceUID()
+                inputDeviceUID: inputDeviceUID
             )
         } catch {
             // Put back the disconnection pause made. The meeting stays paused, and a
@@ -869,8 +904,10 @@ final class MeetingRecorder {
         diarizationActive = false
 
         // The tap and its aggregate outlive the app if not destroyed, so this runs on
-        // every exit path rather than only the successful one.
-        systemAudio.stop()
+        // every exit path rather than only the successful one. Off the main thread for
+        // the same reason building them is.
+        let capture = systemAudio
+        await Task.detached { capture.stop() }.value
         systemAudioActive = false
     }
 }
