@@ -36,7 +36,9 @@ struct MeetingsView: View {
                 sidebar
             }
         } detail: {
-            if let meeting = selection ?? recorder.activeMeeting {
+            // A deleted meeting is never shown. See the state change below.
+            if let meeting = selection ?? recorder.activeMeeting,
+               !meeting.isDeleted, meeting.modelContext != nil {
                 // A new view per meeting. Reused, it carried the previous meeting's
                 // summary state across: click Generate on one, click another, and the
                 // second one's button span and stayed disabled until the first
@@ -56,6 +58,22 @@ struct MeetingsView: View {
         .onChange(of: recorder.activeMeeting) { _, meeting in
             // Follow the meeting being recorded, so the live transcript is on screen.
             if let meeting { selection = meeting }
+        }
+        .onChange(of: recorder.state) { _, _ in
+            // A start that fails deletes the meeting it had inserted, which the list
+            // showed, and let the user select, while it was preparing. Left selected,
+            // the detail view went on reading a deleted model and could crash.
+            if let selection, selection.isDeleted || selection.modelContext == nil {
+                self.selection = nil
+            }
+        }
+        .onChange(of: selection) { _, _ in
+            // The recorder's error belongs to the meeting it happened in. Once the user
+            // picks another, it would only mislead there. A running meeting keeps its
+            // error, since its live section and panel still need it.
+            if recorder.state == .idle {
+                recorder.clearError()
+            }
         }
     }
 
@@ -208,6 +226,7 @@ private struct MeetingDetailView: View {
     @Bindable var meeting: Meeting
 
     @Environment(MeetingRecorder.self) private var recorder
+    @Environment(AppSettings.self) private var settings
     @Environment(\.modelContext) private var modelContext
 
     @State private var isSummarizing = false
@@ -225,7 +244,10 @@ private struct MeetingDetailView: View {
                 if isLive {
                     liveTranscript
                 } else {
-                    if let error = recorder.lastError, meeting.utterances.isEmpty {
+                    // Shown whether or not the meeting has speakers. Hidden once there
+                    // were utterances, it kept quiet about a recognizer failure or a
+                    // recording that could not be saved in any meeting that had any.
+                    if let error = recorder.lastError {
                         Label(error, systemImage: "exclamationmark.triangle")
                             .font(.caption)
                             .foregroundStyle(.orange)
@@ -312,13 +334,41 @@ private struct MeetingDetailView: View {
 
     private var liveTranscript: some View {
         VStack(alignment: .leading, spacing: 12) {
-            if recorder.isPaused {
+            switch recorder.state {
+            case .finishing:
+                // Separating speakers and saving takes a while on a long meeting, and
+                // a pulsing "Recording" through all of it read as still listening.
+                Label {
+                    Text("Saving…")
+                } icon: {
+                    ProgressView().controlSize(.small)
+                }
+            case .paused:
                 Label("Paused", systemImage: "pause.circle.fill")
                     .foregroundStyle(.orange)
-            } else {
+            default:
                 Label("Recording", systemImage: "record.circle.fill")
                     .foregroundStyle(.red)
                     .symbolEffect(.pulse, options: .repeating)
+            }
+
+            // Errors during a meeting used to be set and never shown: a diarizer that
+            // would not load, system audio that would not start, a recognizer that
+            // failed part way.
+            if let error = recorder.lastError {
+                Label(error, systemImage: "exclamationmark.triangle")
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+            }
+
+            // Only while capturing. Teardown clears the flag during the save, and the
+            // note would flash up at the very end of every meeting.
+            if settings.captureSystemAudioInMeetings, !recorder.systemAudioActive,
+               recorder.state == .recording || recorder.state == .paused {
+                Label("Microphone only. System audio is not being recorded, so other people on a call are not transcribed.",
+                      systemImage: "mic")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
 
             Text(recorder.liveTranscript.isEmpty ? "Listening…" : recorder.liveTranscript)

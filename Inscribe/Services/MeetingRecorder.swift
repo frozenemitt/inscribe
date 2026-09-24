@@ -142,6 +142,11 @@ final class MeetingRecorder {
     var isRecording: Bool { state == .recording }
     var isPaused: Bool { state == .paused }
 
+    /// Forget the last error, once the user has moved on from the meeting it belongs to.
+    func clearError() {
+        lastError = nil
+    }
+
     /// Whether a meeting is open, recording or not.
     ///
     /// Read off `state` alone rather than `activeMeeting`, which stays nil until a
