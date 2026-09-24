@@ -1104,6 +1104,15 @@ struct HotkeySettingsView: View {
             }
         }
         .formStyle(.grouped)
+        .onAppear {
+            // The status message says to grant access "and try again" — this is
+            // that retry. Trust may already have been granted in a System
+            // Settings visit that started before this tab was even open, in
+            // which case the poll below never sees a change to react to.
+            if !hotkeyMonitor.isRunning, AccessibilityPermission.isTrusted {
+                hotkeyMonitor.start()
+            }
+        }
         .onReceive(trustPoll) { _ in
             let current = AccessibilityPermission.isTrusted
             guard current != isTrusted else { return }
@@ -1218,6 +1227,15 @@ struct HotkeySettingsView: View {
                 // Stay armed and say why, rather than swallowing the keystroke and
                 // leaving the user pressing keys at a screen that never answers.
                 captureError = "That one cannot be a hotkey. Use a letter, number or punctuation key with at least two of ⌃, ⌥ and ⌘."
+                return
+            }
+
+            // The undo shortcut is checked first, so a dictation binding equal to
+            // it would never fire — the Globe key's own default, ⌃⌥⌘Z, is also
+            // undo's default, and recording it here would silently disable
+            // dictation rather than bind it.
+            if settings.undoHotkeyEnabled, combination == settings.undoHotkeyString {
+                captureError = "\(combination) is already the undo shortcut. Choose a different combination, or turn undo off first."
                 return
             }
 
