@@ -2065,6 +2065,10 @@ struct MeetingAudioSection: View {
     @State private var permissionChecked = false
     @State private var hasPermission = false
 
+    /// Disk used by saved recordings, measured once when the section appears. Read in
+    /// the body, it listed the recordings folder twice on every redraw.
+    @State private var recordingsSize: Int64 = 0
+
     var body: some View {
         @Bindable var settings = settings
 
@@ -2075,8 +2079,8 @@ struct MeetingAudioSection: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
 
-            if MeetingAudioStore.totalSize() > 0 {
-                Text("Recordings currently use \(MeetingAudioStore.formatted(bytes: MeetingAudioStore.totalSize())).")
+            if recordingsSize > 0 {
+                Text("Recordings currently use \(MeetingAudioStore.formatted(bytes: recordingsSize)).")
                     .font(.caption)
                     .foregroundStyle(.tertiary)
             }
@@ -2119,6 +2123,7 @@ struct MeetingAudioSection: View {
                     .foregroundStyle(.orange)
             }
         }
+        .onAppear { recordingsSize = MeetingAudioStore.totalSize() }
     }
 }
 #endif
