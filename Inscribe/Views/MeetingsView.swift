@@ -231,6 +231,7 @@ private struct MeetingDetailView: View {
 
     @State private var isSummarizing = false
     @State private var summaryError: String?
+    @State private var exportError: String?
     @State private var splitTarget: Utterance?
     @State private var player = MeetingPlayer()
 
@@ -270,6 +271,18 @@ private struct MeetingDetailView: View {
             player.load(fileName: meeting.audioFileName)
         }
         .onDisappear { player.unload() }
+        .alert(
+            "Export Failed",
+            isPresented: Binding(
+                get: { exportError != nil },
+                set: { if !$0 { exportError = nil } }
+            ),
+            presenting: exportError
+        ) { _ in
+            Button("OK") {}
+        } message: { message in
+            Text(message)
+        }
         .sheet(item: $splitTarget) { utterance in
             SplitUtteranceSheet(meeting: meeting, utterance: utterance) { offset, speaker in
                 _ = meeting.split(
@@ -663,7 +676,10 @@ private struct MeetingDetailView: View {
 
     private func save(as format: MeetingExporter.Format) {
         let panel = NSSavePanel()
-        panel.nameFieldStringValue = "\(meeting.title).\(format.fileExtension)"
+        // Colons replaced. Every default title carries a time, "14:30", and Finder
+        // shows a colon in a file name as a slash.
+        let name = meeting.title.replacingOccurrences(of: ":", with: ".")
+        panel.nameFieldStringValue = "\(name).\(format.fileExtension)"
         panel.canCreateDirectories = true
 
         guard panel.runModal() == .OK, let url = panel.url else { return }
@@ -671,7 +687,9 @@ private struct MeetingDetailView: View {
         do {
             try MeetingExporter.export(meeting, as: format).write(to: url, atomically: true, encoding: .utf8)
         } catch {
+            // Said on screen. Only logged, a failed export looked like a successful one.
             Log.meetings.error("Export failed: \(error, privacy: .public)")
+            exportError = error.localizedDescription
         }
     }
 }
