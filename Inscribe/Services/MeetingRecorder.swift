@@ -217,8 +217,11 @@ final class MeetingRecorder {
     ///
     /// Twenty a second, like the dictation overlay: the band is drawn from the
     /// microphone and anything slower reads as lag.
+    ///
+    /// Runs for every meeting, whether or not the panel is switched on, and follows
+    /// the setting as it changes. Read only when the meeting began, switching the panel
+    /// on or off mid-meeting did nothing until the next one.
     private func startIndicator() {
-        guard settings.showMeetingIndicator else { return }
         indicatorTicker?.cancel()
 
         // The panel's buttons reach back here, so pausing or ending a meeting does not
@@ -236,16 +239,33 @@ final class MeetingRecorder {
             }
         }
 
-        indicator.show()
         indicatorTicker = Task { @MainActor [weak self] in
+            var showing = false
             while !Task.isCancelled {
                 guard let self, self.state != .idle else { return }
-                self.indicator.update(
-                    spectrum: self.engine.spectrum,
-                    seconds: self.recordedSeconds,
-                    isPaused: self.isPaused
-                )
-                try? await Task.sleep(for: .milliseconds(50))
+
+                if self.settings.showMeetingIndicator {
+                    if !showing {
+                        self.indicator.show()
+                        showing = true
+                    }
+                    self.indicator.update(
+                        // The engine's band belongs to whoever owns the engine. During
+                        // a pause that can be a dictation, and the meeting's panel drew
+                        // its voice as though the meeting were still listening.
+                        spectrum: self.engine.owner == .meeting ? self.engine.spectrum : [],
+                        seconds: self.recordedSeconds,
+                        isPaused: self.isPaused,
+                        error: self.lastError
+                    )
+                } else if showing {
+                    self.indicator.hide()
+                    showing = false
+                }
+
+                // Only the setting is watched while the panel is off, and a tenth of a
+                // second is soon enough for that.
+                try? await Task.sleep(for: .milliseconds(showing ? 50 : 100))
             }
         }
     }
@@ -589,7 +609,11 @@ final class MeetingRecorder {
             try await engine.startRecording(
                 owner: .meeting,
                 contextualStrings: settings.vocabularyHints,
-                inputDeviceUID: inputDeviceUID
+                inputDeviceUID: inputDeviceUID,
+                // Passed on every session, not only the first. Left out here, the
+                // engine skipped the band after any resume and the panel sat flat for
+                // the rest of the meeting.
+                publishesSpectrum: settings.showMeetingIndicator
             )
         } catch {
             // Put back the disconnection pause made. The meeting stays paused, and a
