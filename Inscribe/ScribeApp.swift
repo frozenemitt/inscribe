@@ -199,6 +199,10 @@ struct ScribeApp: App {
                 .environment(coordinator)
                 .environment(hotkeyMonitor)
                 .environment(SoundCatalog.shared)
+                // The store, as every other scene has it. Changing the history limit
+                // prunes history from here, and without a container the view's model
+                // context has nothing behind it.
+                .modelContainer(Self.modelContainer)
                 .windowResizeBehavior(.enabled)
         }
 
