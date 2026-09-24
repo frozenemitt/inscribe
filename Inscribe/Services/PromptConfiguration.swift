@@ -154,18 +154,16 @@ struct Prompt: Identifiable, Codable, Equatable, Hashable {
 
 // MARK: - Prompt Manager
 
-/// Manages custom AI prompts with iCloud synchronization
+/// Manages custom AI prompts, kept in local preferences.
 @Observable
 final class PromptConfiguration {
 
     // MARK: - Published State
 
     private(set) var prompts: [Prompt] = []
-    private(set) var iCloudAvailable: Bool = false
 
     // MARK: - Storage Keys
 
-    private let iCloudKey = "customPrompts"
     private let localKey = "customPrompts"
     private let visibilityKey = "promptVisibility"
     private let generationSettingsKey = "promptGenerationSettings"
@@ -278,25 +276,8 @@ final class PromptConfiguration {
     // MARK: - Initialization
 
     init() {
-        // Check iCloud availability
-        iCloudAvailable = NSUbiquitousKeyValueStore.default.synchronize()
-
-        // Load prompts
         loadPrompts()
-
-        // Listen for iCloud changes
-        NotificationCenter.default.addObserver(
-            self,
-            selector: #selector(iCloudDidChange),
-            name: NSUbiquitousKeyValueStore.didChangeExternallyNotification,
-            object: NSUbiquitousKeyValueStore.default
-        )
-
-        Log.prompts.notice("Initialized with \(self.prompts.count, privacy: .public) prompts, iCloud: \(self.iCloudAvailable, privacy: .public)")
-    }
-
-    deinit {
-        NotificationCenter.default.removeObserver(self)
+        Log.prompts.notice("Initialized with \(self.prompts.count, privacy: .public) prompts")
     }
 
     // MARK: - Public API
@@ -455,19 +436,7 @@ final class PromptConfiguration {
         // Start with built-in prompts
         var loadedPrompts = Self.builtInPrompts
 
-        // Try to load custom prompts from iCloud first, then local storage
-        let customData: Data?
-        if iCloudAvailable, let iCloudData = NSUbiquitousKeyValueStore.default.data(forKey: iCloudKey) {
-            customData = iCloudData
-            Log.prompts.notice("Loaded from iCloud")
-        } else if let localData = UserDefaults.standard.data(forKey: localKey) {
-            customData = localData
-            Log.prompts.notice("Loaded from local storage")
-        } else {
-            customData = nil
-        }
-
-        if let data = customData {
+        if let data = UserDefaults.standard.data(forKey: localKey) {
             do {
                 let customPrompts = try JSONDecoder().decode([Prompt].self, from: data)
                 loadedPrompts.append(contentsOf: customPrompts.filter { !$0.isBuiltIn })
@@ -546,48 +515,11 @@ final class PromptConfiguration {
         do {
             let data = try JSONEncoder().encode(customPrompts)
 
-            // Save to local storage
             UserDefaults.standard.set(data, forKey: localKey)
-
-            // Save to iCloud if available
-            if iCloudAvailable {
-                NSUbiquitousKeyValueStore.default.set(data, forKey: iCloudKey)
-                NSUbiquitousKeyValueStore.default.synchronize()
-                Log.prompts.notice("Saved to iCloud")
-            }
 
             Log.prompts.notice("Saved \(customPrompts.count, privacy: .public) custom prompts")
         } catch {
             Log.prompts.error("Error encoding prompts: \(error, privacy: .public)")
         }
-    }
-
-    // MARK: - iCloud Sync
-
-    @objc private func iCloudDidChange(_ notification: Notification) {
-        guard let userInfo = notification.userInfo,
-              let changeReason = userInfo[NSUbiquitousKeyValueStoreChangeReasonKey] as? Int else {
-            return
-        }
-
-        Log.prompts.notice("iCloud change detected, reason: \(changeReason, privacy: .public)")
-
-        // Reload prompts on external changes
-        if changeReason == NSUbiquitousKeyValueStoreServerChange ||
-           changeReason == NSUbiquitousKeyValueStoreInitialSyncChange {
-            loadPrompts()
-        }
-    }
-
-    /// Force sync with iCloud
-    func syncWithiCloud() {
-        guard iCloudAvailable else {
-            Log.prompts.notice("iCloud not available")
-            return
-        }
-
-        NSUbiquitousKeyValueStore.default.synchronize()
-        loadPrompts()
-        Log.prompts.notice("Synced with iCloud")
     }
 }

@@ -161,7 +161,7 @@ struct MeetingsView: View {
         // The recording is not owned by SwiftData, so cascade delete does not reach it.
         MeetingAudioStore.delete(fileNamed: meeting.audioFileName)
         modelContext.delete(meeting)
-        try? modelContext.save()
+        modelContext.saveOrLog()
     }
 }
 
@@ -288,7 +288,7 @@ private struct MeetingDetailView: View {
             TextField("Title", text: $meeting.title)
                 .textFieldStyle(.plain)
                 .font(.largeTitle.bold())
-                .onSubmit { try? modelContext.save() }
+                .onSubmit { modelContext.saveOrLog() }
 
             HStack(spacing: 8) {
                 Text(meeting.startedAt.formatted(date: .abbreviated, time: .shortened))
@@ -341,7 +341,7 @@ private struct MeetingDetailView: View {
                     Spacer()
                     Button("Add Speaker") {
                         _ = meeting.addSpeaker(in: modelContext)
-                        try? modelContext.save()
+                        modelContext.saveOrLog()
                     }
                     .buttonStyle(.borderless)
                     .font(.caption)
@@ -359,7 +359,7 @@ private struct MeetingDetailView: View {
                             set: { speaker.name = $0 }
                         ))
                         .textFieldStyle(.roundedBorder)
-                        .onSubmit { try? modelContext.save() }
+                        .onSubmit { modelContext.saveOrLog() }
 
                         Text("\(utteranceCount(for: speaker)) lines")
                             .font(.caption)
@@ -371,7 +371,7 @@ private struct MeetingDetailView: View {
                             ForEach(meeting.speakers.filter { $0.speakerId != speaker.speakerId }) { other in
                                 Button("Merge into \(other.resolvedName)") {
                                     meeting.merge(speaker, into: other, in: modelContext)
-                                    try? modelContext.save()
+                                    modelContext.saveOrLog()
                                 }
                             }
                         } label: {
@@ -584,7 +584,7 @@ private struct MeetingDetailView: View {
     /// Save, and drop any speaker left with nothing attributed to them.
     private func finishCorrection() {
         meeting.pruneEmptySpeakers(in: modelContext)
-        try? modelContext.save()
+        modelContext.saveOrLog()
     }
 
     // MARK: Actions

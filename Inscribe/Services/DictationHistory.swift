@@ -35,7 +35,7 @@ enum DictationHistory {
         context.insert(entry)
 
         prune(to: settings.dictationHistoryLimit, in: context)
-        try? context.save()
+        context.saveOrLog()
     }
 
     /// Drop the oldest entries beyond `limit`.
@@ -62,6 +62,6 @@ enum DictationHistory {
         for entry in entries {
             context.delete(entry)
         }
-        try? context.save()
+        context.saveOrLog()
     }
 }

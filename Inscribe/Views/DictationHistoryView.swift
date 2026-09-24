@@ -141,7 +141,7 @@ struct DictationHistoryView: View {
 
                         Button(role: .destructive) {
                             modelContext.delete(dictation)
-                            try? modelContext.save()
+                            modelContext.saveOrLog()
                         } label: {
                             Image(systemName: "trash")
                         }

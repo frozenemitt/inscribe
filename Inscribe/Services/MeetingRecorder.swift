@@ -220,7 +220,7 @@ final class MeetingRecorder {
         // the detail view.
         let meeting = Meeting()
         context.insert(meeting)
-        try? context.save()
+        context.saveOrLog()
 
         // Diarization is best-effort. Failing to load the models costs speaker labels,
         // not the meeting.
@@ -257,7 +257,7 @@ final class MeetingRecorder {
             await teardown()
             MeetingAudioStore.delete(fileNamed: meeting.audioFileName)
             context.delete(meeting)
-            try? context.save()
+            context.saveOrLog()
             activeMeeting = nil
             state = .idle
             AudioFeedbackService.shared.playIfEnabled(.error, settings: settings)
@@ -512,7 +512,7 @@ final class MeetingRecorder {
 
         applyAttribution(timedSegments: collectedSegments, turns: turns, to: meeting, in: context)
 
-        try? context.save()
+        context.saveOrLog()
         await teardown()
 
         state = .idle
@@ -587,7 +587,7 @@ final class MeetingRecorder {
         guard !meeting.isDeleted else { return }
 
         meeting.summary = summary
-        try? context.save()
+        context.saveOrLog()
     }
 
     // MARK: - Teardown
