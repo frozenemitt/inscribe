@@ -100,6 +100,12 @@ final class MeetingRecorder {
     /// it never sees it cleared late and never mistakes a finished step for one running.
     private var transitionTask: Task<Void, Never>?
 
+    /// Saves the meeting so far every half minute while it records.
+    ///
+    /// Everything else reaches the store only at a pause or at stop, so a crash or a
+    /// force quit mid-session used to lose the whole transcript.
+    private var checkpointTask: Task<Void, Never>?
+
     /// Ordered handoff of captured audio to the diarizer.
     ///
     /// The tap runs on the audio thread and the diarizer is an actor, so the handoff
@@ -147,6 +153,55 @@ final class MeetingRecorder {
         #if os(macOS)
         self.indicator = MeetingIndicatorController(settings: settings)
         #endif
+
+        // Built once, at launch, before any meeting can start: every meeting still open
+        // in the store at this point is one a crash or a force quit never let finish.
+        Task { @MainActor [weak self] in
+            self?.closeInterruptedMeetings(in: ScribeApp.modelContainer.mainContext)
+        }
+    }
+
+    /// Close the meetings a crash or a force quit left open.
+    ///
+    /// Such a meeting has no end, so every list showed it as still running and its
+    /// length growing for ever. Its recording was never closed either, which leaves an
+    /// AAC file with audio in it but no index, one AVAudioPlayer cannot open; the
+    /// playback bar offered it and then did nothing. That file is deleted, because
+    /// nothing in the app can read it, and the meeting stops pointing at it.
+    ///
+    /// The end is placed where the last checkpoint's audio ran out, the last moment
+    /// known to have been captured. The transcript is whatever that checkpoint saved.
+    private func closeInterruptedMeetings(in context: ModelContext) {
+        guard state == .idle else { return }
+
+        let open = FetchDescriptor<Meeting>(predicate: #Predicate { $0.endedAt == nil })
+        let meetings: [Meeting]
+        do {
+            meetings = try context.fetch(open)
+        } catch {
+            Log.meetings.error("Could not look for interrupted meetings: \(error, privacy: .public)")
+            return
+        }
+        guard !meetings.isEmpty else { return }
+
+        for meeting in meetings {
+            if meeting.audioFileName != nil,
+               !MeetingAudioStore.isPlayable(fileNamed: meeting.audioFileName) {
+                MeetingAudioStore.delete(fileNamed: meeting.audioFileName)
+                meeting.audioFileName = nil
+            }
+            meeting.endedAt = meeting.startedAt.addingTimeInterval(meeting.recordedDuration)
+
+            // Checkpoints save the words as heard; the replacements a finished meeting
+            // gets at stop() are applied here instead.
+            meeting.rawTranscript = TextProcessor.process(
+                meeting.rawTranscript,
+                replacements: settings.wordReplacements
+            )
+        }
+
+        context.saveOrLog()
+        Log.meetings.notice("Closed \(meetings.count, privacy: .public) meetings left open by a crash or force quit")
     }
 
     #if os(macOS)
@@ -254,6 +309,10 @@ final class MeetingRecorder {
         keepingAudio = settings.keepMeetingAudio
         if keepingAudio {
             meeting.audioFileName = audioWriter.begin()
+            // Saved at once. The file starts filling with the first buffer, and a crash
+            // before the next save would leave it on disk with no meeting naming it,
+            // where nothing ever finds or deletes it.
+            context.saveOrLog()
         }
 
         installAudioTap()
@@ -281,11 +340,35 @@ final class MeetingRecorder {
         sessionStartedAt = Date()
         activeMeeting = meeting
         state = .recording
+        startCheckpoints()
         #if os(macOS)
         startIndicator()
         #endif
         AudioFeedbackService.shared.playIfEnabled(.recordingStarted, settings: settings)
         Log.meetings.notice("Meeting started, diarization: \(self.diarizationActive, privacy: .public)")
+    }
+
+    /// Save the meeting so far every half minute, for as long as it is open.
+    private func startCheckpoints() {
+        checkpointTask?.cancel()
+        checkpointTask = Task { @MainActor [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(30))
+                guard !Task.isCancelled, let self, self.state != .idle else { return }
+                self.checkpoint()
+            }
+        }
+    }
+
+    /// Write the live transcript and the audio captured so far into the meeting.
+    ///
+    /// Only while recording: a paused meeting was saved when it paused and has not
+    /// changed since, and a finishing one is about to be saved in full.
+    private func checkpoint() {
+        guard state == .recording, let meeting = activeMeeting else { return }
+        meeting.rawTranscript = liveTranscript
+        meeting.recordedDuration = recordedSeconds
+        meeting.modelContext?.saveOrLog()
     }
 
     /// The device this meeting records from.
@@ -488,10 +571,12 @@ final class MeetingRecorder {
         }
         sessionStartedAt = nil
 
-        // Written through on every harvest, not only at stop(). A crash or a kill that
-        // never reaches stop() then costs the current session rather than the meeting.
+        // Written through and saved on every harvest, not only at stop(). A crash or a
+        // kill during a pause then costs nothing, and one while recording costs no more
+        // than the time since the last checkpoint.
         activeMeeting?.rawTranscript = accumulatedTranscript
         activeMeeting?.recordedDuration = completedAudioSeconds
+        activeMeeting?.modelContext?.saveOrLog()
     }
 
     /// End the meeting, align speakers to text, and save.
@@ -641,6 +726,8 @@ final class MeetingRecorder {
     // MARK: - Teardown
 
     private func teardown() async {
+        checkpointTask?.cancel()
+        checkpointTask = nil
         engine.audioTap = nil
         engine.collectTimedSegments = false
         await drainDiarizerFeed()

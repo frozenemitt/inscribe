@@ -39,6 +39,15 @@ final class MeetingAudioStore {
         return FileManager.default.fileExists(atPath: url(forFileNamed: name).path)
     }
 
+    /// Whether AVAudioPlayer can open the recording.
+    ///
+    /// A recording whose writer was never closed, because the app crashed or was force
+    /// quit mid-meeting, exists and holds audio but has no index, and nothing plays it.
+    static func isPlayable(fileNamed name: String?) -> Bool {
+        guard let name, fileExists(named: name) else { return false }
+        return (try? AVAudioPlayer(contentsOf: url(forFileNamed: name))) != nil
+    }
+
     static func delete(fileNamed name: String?) {
         guard let name else { return }
         try? FileManager.default.removeItem(at: url(forFileNamed: name))

@@ -528,6 +528,14 @@ private struct MeetingDetailView: View {
             .padding(10)
             .background(RoundedRectangle(cornerRadius: 8).fill(Color.secondary.opacity(0.08)))
             .onAppear { player.load(fileName: meeting.audioFileName) }
+
+            // A recording that will not open used to leave a bar whose button did
+            // nothing, with the reason only in the log.
+            if let error = player.lastError {
+                Label("The recording could not be opened: \(error)", systemImage: "exclamationmark.triangle")
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+            }
         } else if meeting.endedAt != nil {
             Text("No recording was kept for this meeting.")
                 .font(.caption)
