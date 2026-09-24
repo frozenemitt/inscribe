@@ -77,6 +77,13 @@ enum TextInsertionService {
             }
             target.activate()
             try? await Task.sleep(for: .milliseconds(200))
+
+            // ⌘Z goes to whatever is in front. If macOS refused the activation, it
+            // would undo the user's last edit in some other app.
+            guard NSWorkspace.shared.frontmostApplication?.processIdentifier == last.processIdentifier else {
+                log.notice("\(last.appName, privacy: .public) did not come to the front; not undoing")
+                return nil
+            }
         }
 
         await waitForModifiersToClear()
@@ -115,6 +122,8 @@ enum TextInsertionService {
         guard let app, !app.isTerminated, AccessibilityPermission.isTrusted else { return }
 
         let appElement = AXUIElementCreateApplication(app.processIdentifier)
+        // A hint, not a requirement, so it is not worth waiting long for.
+        AXUIElementSetMessagingTimeout(appElement, 0.25)
         let status = AXUIElementSetAttributeValue(
             appElement,
             "AXManualAccessibility" as CFString,
@@ -126,6 +135,17 @@ enum TextInsertionService {
             """)
     }
 
+
+    /// Cap how long any accessibility request may wait for an app to answer.
+    ///
+    /// Set on the system-wide element, which makes it the default for every element.
+    /// The system's own default is several seconds, and every one of those calls runs
+    /// on the main thread, so a hung app froze Inscribe with it. A second is ample for
+    /// a healthy app, including a Chromium one building its tree; the focus lookup
+    /// retries on its own.
+    static func limitAccessibilityWaits() {
+        AXUIElementSetMessagingTimeout(AXUIElementCreateSystemWide(), 1.0)
+    }
 
     /// Deliver `text` to the frontmost app, or to the clipboard if no field is focused.
     ///
@@ -177,12 +197,27 @@ enum TextInsertionService {
         // would arrive as ⌃⌥⌘V. Wait for the user's hand to leave the keys.
         await waitForModifiersToClear()
 
-        let previousClipboard = restoreClipboard ? ClipboardService.read() : nil
+        // The field was found by asking the target app, but ⌘V goes to whatever app is
+        // in front. macOS can refuse the activation above, and the text then landed in
+        // the app the user had moved on to — a Mail draft instead of a Slack reply.
+        if let targetApp, NSWorkspace.shared.frontmostApplication?.processIdentifier != targetApp.processIdentifier {
+            log.error("""
+                \(targetApp.localizedName ?? "The target app", privacy: .public) is not in front \
+                — leaving the transcript on the clipboard instead of pasting into \
+                \(appName, privacy: .public)
+                """)
+            ClipboardService.copy(text)
+            return .copiedToClipboard(reason: .insertionFailed)
+        }
+
+        let previousClipboard = restoreClipboard ? ClipboardService.snapshot() : nil
 
         // Read before pasting, so the field can be compared against itself afterwards.
         let fieldBeforePaste = state(of: field)
 
-        ClipboardService.copy(text)
+        // Marked as momentary when the user's clipboard goes back afterwards, so
+        // clipboard managers do not keep every dictation.
+        let pasteChange = ClipboardService.copy(text, transient: restoreClipboard)
 
         // Give the pasteboard a moment to settle before the receiving app reads it.
         try? await Task.sleep(for: .milliseconds(50))
@@ -222,9 +257,14 @@ enum TextInsertionService {
 
         if let previousClipboard {
             // Safe to put back now: the text is in the field, so the app has already
-            // read the pasteboard.
-            ClipboardService.copy(previousClipboard)
-            log.debug("Restored previous clipboard")
+            // read the pasteboard. Not if something replaced the transcript meanwhile:
+            // a copy the user made during the paste is theirs to keep.
+            if ClipboardService.changeCount == pasteChange {
+                ClipboardService.restore(previousClipboard)
+                log.debug("Restored previous clipboard")
+            } else {
+                log.notice("Clipboard changed during the paste; not restoring the old one")
+            }
         }
 
         if let app = NSWorkspace.shared.frontmostApplication {
@@ -347,9 +387,9 @@ enum TextInsertionService {
     /// it. The same Accessibility access that lets Inscribe type into a field lets it
     /// read one, so this costs no new permission.
     ///
-    /// - Parameter limit: Characters to keep. The tail is kept rather than the head:
-    ///   the words nearest the cursor are the ones that matter, and a long document
-    ///   would otherwise crowd out the dictation itself.
+    /// - Parameter limit: Characters to keep: the ones just before the cursor, which
+    ///   are the words the dictation follows. The end of the field used to be taken,
+    ///   so dictating near the top of a long document gave the model its last page.
     static func focusedFieldContext(in app: NSRunningApplication? = nil, limit: Int = 2000) -> String? {
         guard AccessibilityPermission.isTrusted else { return nil }
         guard let element = focusedTextElement(in: app) else { return nil }
@@ -358,7 +398,14 @@ enum TextInsertionService {
             return nil
         }
 
-        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        // Accessibility reports the cursor in UTF-16 units, as NSString counts them.
+        var beforeCursor = value
+        let length = (value as NSString).length
+        if let caret = caretLocation(of: element), caret >= 0, caret <= length {
+            beforeCursor = (value as NSString).substring(to: caret)
+        }
+
+        let trimmed = beforeCursor.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return nil }
 
         guard trimmed.count > limit else { return trimmed }
