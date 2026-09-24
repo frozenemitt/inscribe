@@ -1574,16 +1574,22 @@ struct DictationSettingsView: View {
             }
 
             Section("Word Replacements") {
-                Text("Applied after transcription, whole words only and ignoring case — so a rule for \"vox\" leaves \"voxel\" alone.")
+                Text("Applied after transcription, whole words only and ignoring case — so a rule for \"vox\" leaves \"voxel\" alone. Leave the written word blank to delete the heard word instead of replacing it.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+
+                if hasDuplicateReplacements {
+                    Label("Two rows have the same heard word — only one of them will be applied.", systemImage: "exclamationmark.triangle")
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                }
 
                 ForEach($replacements) { $row in
                     HStack {
                         TextField("heard", text: $row.spoken)
                         Image(systemName: "arrow.right")
                             .foregroundStyle(.secondary)
-                        TextField("written", text: $row.written)
+                        TextField("written (blank deletes)", text: $row.written)
                         Button {
                             replacements.removeAll { $0.id == row.id }
                             commitReplacements()
@@ -1617,13 +1623,27 @@ struct DictationSettingsView: View {
             .map { ReplacementRow(spoken: $0.key, written: $0.value) }
     }
 
-    /// Rebuild the stored dictionary from the rows, dropping half-finished ones.
+    /// Whether two rows share a heard word, ignoring case the way matching itself
+    /// does. `commitReplacements` below can only keep one value per key, so this is
+    /// the one thing about the list a row-by-row glance would not show: the other
+    /// row is not saved, and nothing else says so.
+    private var hasDuplicateReplacements: Bool {
+        let spokenWords = replacements
+            .map { $0.spoken.trimmingCharacters(in: .whitespaces).lowercased() }
+            .filter { !$0.isEmpty }
+        return Set(spokenWords).count != spokenWords.count
+    }
+
+    /// Rebuild the stored dictionary from the rows, dropping only rows with no
+    /// heard word to match. A blank written word is kept rather than dropped: it
+    /// means "delete this word" rather than "do nothing", and TextProcessor
+    /// already treats an empty replacement that way.
     private func commitReplacements() {
         var result: [String: String] = [:]
         for row in replacements {
             let spoken = row.spoken.trimmingCharacters(in: .whitespaces)
             let written = row.written.trimmingCharacters(in: .whitespaces)
-            guard !spoken.isEmpty, !written.isEmpty else { continue }
+            guard !spoken.isEmpty else { continue }
             result[spoken] = written
         }
         settings.wordReplacements = result
