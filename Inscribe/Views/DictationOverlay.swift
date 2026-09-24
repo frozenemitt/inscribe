@@ -23,7 +23,6 @@ final class DictationOverlayController {
     private let model = OverlayModel()
     private let settings: AppSettings
     /// Held so the panel's move notifications keep arriving for the life of the app.
-    private var moveObserver: (any NSObjectProtocol)?
     /// Held so the desktop-change notifications keep arriving for the life of the app.
     private var spaceObserver: (any NSObjectProtocol)?
 
@@ -68,10 +67,11 @@ final class DictationOverlayController {
         }
         watchForStranding()
 
-        // Back to one line's worth, so each dictation grows from the same place.
+        // Back to one line's worth, so each dictation grows from the same place. The
+        // bottom edge stays put, as it does while growing; shrinking from the top
+        // raised the panel after every long dictation.
         if let panel, panel.frame.height != Self.minimumHeight {
             var frame = panel.frame
-            frame.origin.y = frame.maxY - Self.minimumHeight
             frame.size.height = Self.minimumHeight
             panel.setFrame(frame, display: false)
         }
@@ -185,12 +185,13 @@ final class DictationOverlayController {
         guard let screen = panel.screen ?? NSScreen.main else {
             return DictationOverlayView.lineHeight * 5
         }
-        let room = screen.visibleFrame.maxY - 12 - panel.frame.minY - Self.chromeHeight
+        // Everything in the panel that is not text: the band, the gap under it, and
+        // the padding. Only the padding was counted, so the tallest panel grew 32
+        // points too high, up under the menu bar.
+        let chrome = Self.bandHeight + Self.contentSpacing + Self.verticalPadding
+        let room = screen.visibleFrame.maxY - 12 - panel.frame.minY - chrome
         return max(room, DictationOverlayView.lineHeight)
     }
-
-    /// The panel's own padding, above and below the text.
-    private static let chromeHeight: CGFloat = 28
 
     // MARK: - Panel
 
@@ -246,6 +247,14 @@ final class DictationOverlayController {
         // view's `contentView` it would inherit the glass's alpha, and thinning the
         // pane would thin the dictation with it.
         let container = DragHandleView()
+        // Remembered only when the user drags it. Every programmatic move used to be
+        // saved too, so placing the panel on the screen with the pointer pinned it to
+        // that screen for good, and each resize nudged the saved spot upward.
+        container.onDragEnded = { [weak self] in
+            guard let self, let panel = self.panel else { return }
+            self.settings.overlayOriginX = panel.frame.origin.x
+            self.settings.overlayOriginY = panel.frame.origin.y
+        }
         container.addSubview(glass)
         container.addSubview(hosting)
         NSLayoutConstraint.activate([
@@ -260,35 +269,15 @@ final class DictationOverlayController {
         ])
         panel.contentView = container
 
-        // Remember where it was left. The panel moves while the user drags it, so this
-        // fires often; writing a preference is cheap and the last one wins.
-        moveObserver = NotificationCenter.default.addObserver(
-            forName: NSWindow.didMoveNotification,
-            object: panel,
-            queue: .main
-        ) { [weak self] _ in
-            MainActor.assumeIsolated {
-                guard let self, let panel = self.panel else { return }
-                self.settings.overlayOriginX = panel.frame.origin.x
-                self.settings.overlayOriginY = panel.frame.origin.y
-            }
-        }
-
         return panel
     }
 
     /// Drop the current panel and build another in its place.
     ///
     /// The old one is ordered out first so it does not linger on whatever desktop it
-    /// was stranded on, and its move observer goes with it: `makePanel` registers a
-    /// new one, and the old token would otherwise keep firing for a window nobody can
-    /// see.
+    /// was stranded on.
     private func replacePanel() {
         panel?.orderOut(nil)
-        if let moveObserver {
-            NotificationCenter.default.removeObserver(moveObserver)
-            self.moveObserver = nil
-        }
         panel = makePanel()
     }
 
@@ -350,12 +339,17 @@ final class DictationOverlayController {
 
 /// Drags the panel from anywhere inside it.
 private final class DragHandleView: NSView {
+    /// Called once a drag the user made has finished.
+    var onDragEnded: (() -> Void)?
+
     override func hitTest(_ point: NSPoint) -> NSView? {
         super.hitTest(point) == nil ? nil : self
     }
 
     override func mouseDown(with event: NSEvent) {
+        // Runs the whole drag before returning.
         window?.performDrag(with: event)
+        onDragEnded?()
     }
 }
 
