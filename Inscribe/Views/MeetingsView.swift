@@ -384,14 +384,38 @@ private struct MeetingDetailView: View {
                     .foregroundStyle(.secondary)
             }
 
-            Text(recorder.liveTranscript.isEmpty ? "Listening…" : recorder.liveTranscript)
+            let live = recorder.liveTranscript
+            Text(live.isEmpty ? "Listening…" : Self.tail(of: live))
                 .textSelection(.enabled)
-                .foregroundStyle(recorder.liveTranscript.isEmpty ? .secondary : .primary)
+                .foregroundStyle(live.isEmpty ? .secondary : .primary)
 
             Text("Speakers are separated once the meeting ends — attribution needs the whole recording to tell voices apart reliably.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
+    }
+
+    /// The end of a live transcript: its last few hundred words, marked as cut.
+    ///
+    /// The live text changes several times a second, and each change laid out the
+    /// whole meeting again, which on a long meeting kept the main thread busy for as
+    /// long as it ran. The end is what anyone reads while it grows; the whole of it is
+    /// in the meeting once it stops.
+    private static func tail(of text: String, words: Int = 300) -> String {
+        var index = text.endIndex
+        var spaces = 0
+
+        while index > text.startIndex {
+            let previous = text.index(before: index)
+            if text[previous] == " " {
+                spaces += 1
+                if spaces == words {
+                    return "…" + text[index...]
+                }
+            }
+            index = previous
+        }
+        return text
     }
 
     @ViewBuilder
@@ -501,46 +525,54 @@ private struct MeetingDetailView: View {
                     .foregroundStyle(.secondary)
 
                 let hasAudio = meeting.hasAudio
+                // Read once for every line. The player changes it only when playback
+                // crosses into another utterance, so this view redraws then and not
+                // on every tick of the clock.
+                let playingID = player.playingUtteranceID
 
-                ForEach(meeting.orderedUtterances) { utterance in
-                    VStack(alignment: .leading, spacing: 3) {
-                        HStack(spacing: 6) {
-                            speakerMenu(for: utterance)
+                // Lazy, so a long meeting builds only the lines on screen.
+                LazyVStack(alignment: .leading, spacing: 14) {
+                    ForEach(meeting.orderedUtterances) { utterance in
+                        VStack(alignment: .leading, spacing: 3) {
+                            HStack(spacing: 6) {
+                                speakerMenu(for: utterance)
 
-                            // Hearing the moment is the only way to know whether an
-                            // attribution is right, so the timestamp plays it.
-                            if hasAudio {
-                                Button {
-                                    player.load(fileName: meeting.audioFileName)
-                                    player.play(from: utterance)
-                                } label: {
-                                    HStack(spacing: 3) {
-                                        Image(systemName: "play.circle")
-                                        Text(utterance.timestampLabel)
-                                            .monospacedDigit()
+                                // Hearing the moment is the only way to know whether an
+                                // attribution is right, so the timestamp plays it.
+                                if hasAudio {
+                                    Button {
+                                        player.load(fileName: meeting.audioFileName)
+                                        player.follow(meeting.orderedUtterances)
+                                        player.play(from: utterance)
+                                    } label: {
+                                        HStack(spacing: 3) {
+                                            Image(systemName: "play.circle")
+                                            Text(utterance.timestampLabel)
+                                                .monospacedDigit()
+                                        }
+                                        .font(.caption)
                                     }
-                                    .font(.caption)
-                                }
-                                .buttonStyle(.plain)
-                                .foregroundStyle(.secondary)
-                                .help("Play from here")
-                            } else {
-                                Text(utterance.timestampLabel)
-                                    .font(.caption)
+                                    .buttonStyle(.plain)
                                     .foregroundStyle(.secondary)
-                                    .monospacedDigit()
+                                    .help("Play from here")
+                                } else {
+                                    Text(utterance.timestampLabel)
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                        .monospacedDigit()
+                                }
                             }
+                            Text(utterance.text)
+                                .textSelection(.enabled)
                         }
-                        Text(utterance.text)
-                            .textSelection(.enabled)
+                        .padding(.vertical, 3)
+                        .padding(.horizontal, 6)
+                        .background(
+                            RoundedRectangle(cornerRadius: 5)
+                                .fill(utterance.persistentModelID == playingID
+                                      ? Color.accentColor.opacity(0.12) : .clear)
+                        )
                     }
-                    .padding(.vertical, 3)
-                    .padding(.horizontal, 6)
-                    .background(
-                        RoundedRectangle(cornerRadius: 5)
-                            .fill(player.isPlaying(utterance)
-                                  ? Color.accentColor.opacity(0.12) : .clear)
-                    )
                 }
             } else if meeting.rawTranscript.isEmpty {
                 Text("No transcript was captured.")
@@ -559,49 +591,7 @@ private struct MeetingDetailView: View {
     @ViewBuilder
     private var playbackBar: some View {
         if meeting.hasAudio {
-            HStack(spacing: 12) {
-                Button {
-                    player.load(fileName: meeting.audioFileName)
-                    player.togglePlayPause()
-                } label: {
-                    Image(systemName: player.isPlaying ? "pause.circle.fill" : "play.circle.fill")
-                        .font(.title2)
-                }
-                .buttonStyle(.plain)
-
-                Text(MeetingPlayer.timeLabel(player.currentTime))
-                    .font(.caption)
-                    .monospacedDigit()
-                    .foregroundStyle(.secondary)
-
-                Slider(
-                    value: Binding(
-                        get: { player.currentTime },
-                        set: { player.seek(to: $0) }
-                    ),
-                    in: 0...max(player.duration, 1)
-                )
-
-                Text(MeetingPlayer.timeLabel(player.duration))
-                    .font(.caption)
-                    .monospacedDigit()
-                    .foregroundStyle(.secondary)
-
-                Text(MeetingAudioStore.formatted(bytes: MeetingAudioStore.size(ofFileNamed: meeting.audioFileName)))
-                    .font(.caption2)
-                    .foregroundStyle(.tertiary)
-            }
-            .padding(10)
-            .background(RoundedRectangle(cornerRadius: 8).fill(Color.secondary.opacity(0.08)))
-            .onAppear { player.load(fileName: meeting.audioFileName) }
-
-            // A recording that will not open used to leave a bar whose button did
-            // nothing, with the reason only in the log.
-            if let error = player.lastError {
-                Label("The recording could not be opened: \(error)", systemImage: "exclamationmark.triangle")
-                    .font(.caption)
-                    .foregroundStyle(.orange)
-            }
+            PlaybackBar(meeting: meeting, player: player)
         } else if meeting.endedAt != nil {
             Text("No recording was kept for this meeting.")
                 .font(.caption)
@@ -693,6 +683,65 @@ private struct MeetingDetailView: View {
             // Said on screen. Only logged, a failed export looked like a successful one.
             Log.meetings.error("Export failed: \(error, privacy: .public)")
             exportError = error.localizedDescription
+        }
+    }
+}
+
+// MARK: - Playback Bar
+
+/// Play, pause and scrub a meeting's recording.
+///
+/// A view of its own because it reads the playback time, which changes four times a
+/// second. Read in the detail view's body, that time redrew the whole transcript
+/// with it.
+private struct PlaybackBar: View {
+    let meeting: Meeting
+    let player: MeetingPlayer
+
+    var body: some View {
+        HStack(spacing: 12) {
+            Button {
+                player.load(fileName: meeting.audioFileName)
+                player.follow(meeting.orderedUtterances)
+                player.togglePlayPause()
+            } label: {
+                Image(systemName: player.isPlaying ? "pause.circle.fill" : "play.circle.fill")
+                    .font(.title2)
+            }
+            .buttonStyle(.plain)
+
+            Text(MeetingPlayer.timeLabel(player.currentTime))
+                .font(.caption)
+                .monospacedDigit()
+                .foregroundStyle(.secondary)
+
+            Slider(
+                value: Binding(
+                    get: { player.currentTime },
+                    set: { player.seek(to: $0) }
+                ),
+                in: 0...max(player.duration, 1)
+            )
+
+            Text(MeetingPlayer.timeLabel(player.duration))
+                .font(.caption)
+                .monospacedDigit()
+                .foregroundStyle(.secondary)
+
+            Text(MeetingAudioStore.formatted(bytes: MeetingAudioStore.size(ofFileNamed: meeting.audioFileName)))
+                .font(.caption2)
+                .foregroundStyle(.tertiary)
+        }
+        .padding(10)
+        .background(RoundedRectangle(cornerRadius: 8).fill(Color.secondary.opacity(0.08)))
+        .onAppear { player.load(fileName: meeting.audioFileName) }
+
+        // A recording that will not open used to leave a bar whose button did
+        // nothing, with the reason only in the log.
+        if let error = player.lastError {
+            Label("The recording could not be opened: \(error)", systemImage: "exclamationmark.triangle")
+                .font(.caption)
+                .foregroundStyle(.orange)
         }
     }
 }
