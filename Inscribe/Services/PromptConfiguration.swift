@@ -324,16 +324,6 @@ final class PromptConfiguration {
         }
     }
 
-    /// Set visibility for a prompt
-    func setVisibility(promptId: UUID, visible: Bool) {
-        guard let index = prompts.firstIndex(where: { $0.id == promptId }) else { return }
-        prompts[index].isVisible = visible
-        saveVisibility()
-        if !prompts[index].isBuiltIn {
-            savePrompts()
-        }
-    }
-
     /// Update generation settings for any prompt (including built-in)
     func updateGenerationSettings(
         promptId: UUID,
@@ -372,18 +362,6 @@ final class PromptConfiguration {
         Log.prompts.notice("Added prompt: \(newPrompt.name)")
     }
 
-    /// Create and add a new prompt
-    func createPrompt(name: String, systemPrompt: String, userTemplate: String) -> Prompt {
-        let prompt = Prompt(
-            name: name,
-            systemPrompt: systemPrompt,
-            userTemplate: userTemplate,
-            isBuiltIn: false
-        )
-        addPrompt(prompt)
-        return prompt
-    }
-
     /// Update an existing prompt (only custom prompts can be updated)
     func updatePrompt(_ prompt: Prompt) {
         guard let index = prompts.firstIndex(where: { $0.id == prompt.id }) else {
@@ -416,30 +394,6 @@ final class PromptConfiguration {
         let removed = prompts.remove(at: index)
         savePrompts()
         Log.prompts.notice("Deleted prompt: \(removed.name)")
-    }
-
-    /// Reorder prompts
-    func movePrompt(from source: IndexSet, to destination: Int) {
-        // Manually implement move without SwiftUI dependency
-        let itemsToMove = source.sorted().compactMap { index in
-            index < prompts.count ? prompts[index] : nil
-        }
-        
-        // Remove items (in reverse order to maintain indices)
-        for index in source.sorted(by: >) {
-            if index < prompts.count {
-                prompts.remove(at: index)
-            }
-        }
-        
-        // Calculate adjusted destination
-        let adjustedDestination = source.reduce(destination) { destination, sourceIndex in
-            sourceIndex < destination ? destination - 1 : destination
-        }
-        
-        // Insert items at destination
-        prompts.insert(contentsOf: itemsToMove, at: adjustedDestination)
-        savePrompts()
     }
 
     // MARK: - Persistence

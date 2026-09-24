@@ -56,34 +56,6 @@ final class AIProcessor {
 
     let promptConfiguration: PromptConfiguration
 
-    // MARK: - Available Models
-
-    /// Represents an available AI model
-    struct AIModel: Identifiable, Equatable, Hashable {
-        public let id: String
-        public let name: String
-        public let description: String
-
-        init(id: String, name: String, description: String) {
-            self.id = id
-            self.name = name
-            self.description = description
-        }
-    }
-
-    /// Available models from Apple's FoundationModels framework
-    static let availableModels: [AIModel] = [
-        AIModel(
-            id: "default",
-            name: "Default",
-            description: "Apple's default on-device language model"
-        )
-        // Additional models can be added here as Apple exposes more options
-    ]
-
-    /// The currently selected model ID
-    var selectedModelId: String = "default"
-
     // MARK: - Initialization
 
     init(promptConfiguration: PromptConfiguration) {
@@ -122,25 +94,6 @@ final class AIProcessor {
             prompt: prompt,
             surroundingText: surroundingText
         )
-    }
-
-    /// Process text with a custom prompt (not from configuration)
-    /// - Parameters:
-    ///   - text: The transcribed text to process
-    ///   - systemPrompt: The system prompt for the AI
-    ///   - userPrompt: The user prompt template (use {text} as placeholder)
-    /// - Returns: Processed text
-    func processWithCustomPrompt(
-        text: String,
-        systemPrompt: String,
-        userPrompt: String
-    ) async throws -> String {
-        let prompt = Prompt(
-            name: "Custom",
-            systemPrompt: systemPrompt,
-            userTemplate: userPrompt
-        )
-        return try await processWithPrompt(text: text, prompt: prompt)
     }
 
     /// Quick process with a built-in action

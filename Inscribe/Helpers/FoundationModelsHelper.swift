@@ -149,37 +149,6 @@ class FoundationModelsHelper {
             .trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
-    // MARK: - Session Recovery
-
-    /// Recover from context window exceeded error by creating a new session with condensed transcript
-    /// - Parameters:
-    ///   - previousSession: The session that exceeded context window
-    ///   - keepLastEntries: Number of last entries to keep (default: 1)
-    /// - Returns: A new session with condensed transcript
-    static func recoverSession(
-        from previousSession: LanguageModelSession,
-        keepLastEntries: Int = 1
-    ) -> LanguageModelSession {
-        let transcript = previousSession.transcript
-        let allEntries = Array(transcript) 
-        var condensedEntries = [Transcript.Entry]()
-
-        // Always keep the first entry (instructions)
-        if let firstEntry = allEntries.first {
-            condensedEntries.append(firstEntry)
-
-            // Keep the specified number of last entries
-            if allEntries.count > 1 {
-                let startIndex = max(1, allEntries.count - keepLastEntries)
-                let lastEntries = Array(allEntries[startIndex...])
-                condensedEntries.append(contentsOf: lastEntries)
-            }
-        }
-
-        let condensedTranscript = Transcript(entries: condensedEntries)
-        return LanguageModelSession(transcript: condensedTranscript)
-    }
-
     // MARK: - Language Support
 
     /// Check if the current locale is supported by Foundation Models.
@@ -226,43 +195,6 @@ class FoundationModelsHelper {
         }
     }
 
-    // MARK: - Generation Options Helpers
-
-    /// Create generation options for deterministic output
-    /// - Returns: GenerationOptions configured for greedy sampling
-    static func deterministicOptions() -> GenerationOptions {
-        return GenerationOptions(samplingMode: .greedy)
-    }
-
-    /// Create generation options with custom temperature
-    /// - Parameter temperature: Temperature value (0.0 for deterministic, higher for more creative)
-    /// - Returns: GenerationOptions with specified temperature
-    static func temperatureOptions(_ temperature: Double) -> GenerationOptions {
-        return GenerationOptions(temperature: temperature)
-    }
-
-    // MARK: - Convenience Methods
-
-    /// Simple text generation with automatic session creation and error handling
-    /// - Parameters:
-    ///   - prompt: The user prompt
-    ///   - instructions: System instructions (optional)
-    ///   - deterministic: Whether to use deterministic generation (default: false)
-    /// - Returns: Generated text
-    /// - Throws: FoundationModelsError
-    static func quickGenerate(
-        prompt: String,
-        instructions: String? = nil,
-        deterministic: Bool = false
-    ) async throws -> String {
-        let session = LanguageModelSession(
-            model: permissiveModel,
-            instructions: instructions ?? "You are a helpful assistant."
-        )
-
-        let options = deterministic ? deterministicOptions() : nil
-        return try await generateText(session: session, prompt: prompt, options: options)
-    }
 }
 
 // MARK: - Error Types
@@ -288,63 +220,5 @@ enum FoundationModelsError: LocalizedError {
         case .generationFailed(let error):
             return "Failed to generate content: \(error.localizedDescription)"
         }
-    }
-}
-
-// MARK: - Session State Manager
-
-/// Helper class for managing multiple sessions and their state
-@MainActor
-class FoundationModelsSessionManager {
-    private var sessions: [String: LanguageModelSession] = [:]
-
-    /// Get or create a session with the given ID
-    /// - Parameters:
-    ///   - id: Unique identifier for the session
-    ///   - instructions: Instructions for new sessions
-    /// - Returns: The session for the given ID
-    func getSession(id: String, instructions: String? = nil) -> LanguageModelSession {
-        if let existingSession = sessions[id] {
-            return existingSession
-        }
-
-        let newSession = LanguageModelSession(
-            model: FoundationModelsHelper.permissiveModel,
-            instructions: instructions ?? "You are a helpful assistant."
-        )
-        sessions[id] = newSession
-        return newSession
-    }
-
-    /// Remove a session
-    /// - Parameter id: The session ID to remove
-    func removeSession(id: String) {
-        sessions.removeValue(forKey: id)
-    }
-
-    /// Handle context window exceeded by creating a new session
-    /// - Parameters:
-    ///   - id: The session ID
-    ///   - keepLastEntries: Number of last entries to keep
-    /// - Returns: The new recovered session
-    func recoverSession(id: String, keepLastEntries: Int = 1) -> LanguageModelSession? {
-        guard let oldSession = sessions[id] else { return nil }
-
-        let newSession = FoundationModelsHelper.recoverSession(
-            from: oldSession,
-            keepLastEntries: keepLastEntries
-        )
-        sessions[id] = newSession
-        return newSession
-    }
-
-    /// Clear all sessions
-    func clearAllSessions() {
-        sessions.removeAll()
-    }
-
-    /// Get the number of active sessions
-    var sessionCount: Int {
-        return sessions.count
     }
 }
