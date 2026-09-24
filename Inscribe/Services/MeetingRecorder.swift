@@ -376,7 +376,13 @@ final class MeetingRecorder {
             return
         }
 
-        sessionStartedAt = Date()
+        // The meeting is dated from here, not from when it was inserted. That was before
+        // the models loaded and the engine started, seconds earlier on a cold start,
+        // and those seconds made its wall-clock length exceed its audio, which reads as
+        // a pause that never happened.
+        let startedAt = Date()
+        sessionStartedAt = startedAt
+        meeting.startedAt = startedAt
         activeMeeting = meeting
         state = .recording
         startCheckpoints()
@@ -568,9 +574,11 @@ final class MeetingRecorder {
         // recording and fed to its diarizer, shifting every later timestamp.
         engine.audioTap = nil
 
+        // Taken before the stop is awaited, which is when capture ends; see harvestSession.
+        let sessionEndedAt = Date()
         let transcript = (try? await engine.stopRecording(owner: .meeting)) ?? engine.currentTranscript
         reportEngineError()
-        harvestSession(transcript: transcript)
+        harvestSession(transcript: transcript, endedAt: sessionEndedAt)
 
         // Turned off only once the session is harvested. The engine reads this flag on
         // every final result, and the stop's finalize step is exactly when the last
@@ -641,7 +649,12 @@ final class MeetingRecorder {
     }
 
     /// Move this session's results onto the meeting clock.
-    private func harvestSession(transcript: String) {
+    ///
+    /// - Parameter endedAt: When capture stopped, taken before the engine's stop was
+    ///   awaited. The stop ends capture at once and then spends up to several seconds
+    ///   finalizing; measured after it, every session counted seconds that were never
+    ///   recorded, and an unpaused meeting showed a "recorded" figure as if paused.
+    private func harvestSession(transcript: String, endedAt: Date) {
         let offset = sessionOffset
 
         collectedSegments.append(contentsOf: engine.timedSegments.map { segment in
@@ -661,7 +674,7 @@ final class MeetingRecorder {
         // recorded while paused, so this is both the length of the audio file and the
         // clock the segment offsets are placed on.
         if let sessionStartedAt {
-            completedAudioSeconds += Date().timeIntervalSince(sessionStartedAt)
+            completedAudioSeconds += endedAt.timeIntervalSince(sessionStartedAt)
         }
         sessionStartedAt = nil
 
@@ -710,6 +723,11 @@ final class MeetingRecorder {
     }
 
     private func finish(_ meeting: Meeting, wasRecording: Bool, in context: ModelContext) async {
+        // The meeting ends now, when stop was asked for. Taken after the engine's stop
+        // and the last diarizer chunk, the end ran seconds past the audio, and an
+        // unpaused meeting's two lengths disagreed as though it had been paused.
+        let stoppedAt = Date()
+
         if wasRecording {
             AudioFeedbackService.shared.playIfEnabled(.recordingStopped, settings: settings)
 
@@ -720,7 +738,7 @@ final class MeetingRecorder {
 
             let transcript = (try? await engine.stopRecording(owner: .meeting)) ?? engine.currentTranscript
             reportEngineError()
-            harvestSession(transcript: transcript)
+            harvestSession(transcript: transcript, endedAt: stoppedAt)
 
             // After the harvest, as in pause(): the stop is what makes the last words
             // final, and they are only collected while this is on.
@@ -730,7 +748,7 @@ final class MeetingRecorder {
         await drainDiarizerFeed()
         let turns = diarizationActive ? await diarizer.finish() : []
 
-        meeting.endedAt = Date()
+        meeting.endedAt = stoppedAt
         meeting.recordedDuration = completedAudioSeconds
         meeting.audioFileName = audioWriter.finish()
         reportRecordingFailure()
