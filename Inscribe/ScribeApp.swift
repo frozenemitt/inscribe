@@ -243,11 +243,10 @@ struct ScribeApp: App {
         let hotkeyMonitor: GlobalHotkeyMonitor
 
         func run() {
-            // Asking on first launch puts the prompt in front of the user while they are
-            // still thinking about Inscribe. macOS shows it only once per app version.
-            if !AccessibilityPermission.isTrusted {
-                AccessibilityPermission.requestTrust()
-            }
+            // No app Inscribe asks about may hold it up for long. The system's default
+            // wait on an app that does not answer is several seconds, spent on the
+            // main thread, and one of those calls runs as recording starts.
+            TextInsertionService.limitAccessibilityWaits()
 
             // The coordinator keeps finished dictations, which needs the open store.
             coordinator.modelContext = ScribeApp.modelContainer.mainContext
@@ -282,6 +281,9 @@ struct ScribeApp: App {
             hotkeyMonitor.onCancel = {
                 Task { @MainActor in await coordinator.cancel() }
             }
+            hotkeyMonitor.onAbandon = {
+                Task { @MainActor in await coordinator.cancel(quietly: true) }
+            }
             // Dictation only. The tap swallows Escape while this is true, so reporting a
             // meeting here would eat the key in whatever app the user is actually using,
             // for the whole length of the meeting — and cancel the meeting with it.
@@ -307,7 +309,9 @@ struct ScribeApp: App {
             into monitor: GlobalHotkeyMonitor
         ) {
             withObservationTracking {
-                monitor.isRecording = coordinator.isRecording
+                // From the moment a start begins, not only once it is recording: an
+                // Escape pressed during the start should cancel it, not reach the app.
+                monitor.isRecording = coordinator.isCancellable
             } onChange: {
                 Task { @MainActor in mirrorRecordingState(from: coordinator, into: monitor) }
             }
@@ -345,9 +349,17 @@ struct ScribeApp: App {
                 // to build while trusted is a real fault, and retrying it forever only
                 // tears one down and rebuilds it every two seconds for the life of the app.
                 // Three attempts, then say so and stop.
+                // Asked here, once the check has failed after launch settled, rather
+                // than at launch: the check can read false while launch is finishing,
+                // and asking then showed the prompt to people who had already granted it.
+                var askedForTrust = false
                 while !AccessibilityPermission.isTrusted {
                     try? await Task.sleep(for: .seconds(2))
                     guard !hotkeyMonitor.isRunning else { return }
+                    if !askedForTrust, !AccessibilityPermission.isTrusted {
+                        askedForTrust = true
+                        AccessibilityPermission.requestTrust()
+                    }
                 }
 
                 for attempt in 1...3 {
