@@ -111,6 +111,9 @@ final class MeetingRecorder {
     /// force quit mid-session used to lose the whole transcript.
     private var checkpointTask: Task<Void, Never>?
 
+    /// Pauses the meeting when its microphone goes away.
+    @ObservationIgnored private var interruptionObserver: (any NSObjectProtocol)?
+
     /// Ordered handoff of captured audio to the diarizer.
     ///
     /// The tap runs on the audio thread and the diarizer is an actor, so the handoff
@@ -166,6 +169,25 @@ final class MeetingRecorder {
         // At launch, before anything can load a speaker model.
         DiarizationModelStore.stayOffline()
         #endif
+
+        // A microphone that changes mid-meeting ends the capture: AirPods connecting, a
+        // USB microphone unplugged. Pause rather than carry on recording silence, and
+        // say why; Resume picks up whichever microphone is current.
+        interruptionObserver = NotificationCenter.default.addObserver(
+            forName: TranscriptionEngine.captureInterruptedNotification,
+            object: engine,
+            queue: .main
+        ) { [weak self] note in
+            guard (note.userInfo?["owner"] as? TranscriptionEngine.SessionOwner) == .meeting else { return }
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                Log.meetings.error("Microphone changed mid-meeting — pausing")
+                Task {
+                    await self.pause()
+                    self.lastError = "The microphone changed, so the meeting paused. Press Resume to carry on with the current microphone."
+                }
+            }
+        }
 
         // Built once, at launch, before any meeting can start: every meeting still open
         // in the store at this point is one a crash or a force quit never let finish.
@@ -248,6 +270,12 @@ final class MeetingRecorder {
             var showing = false
             while !Task.isCancelled {
                 guard let self, self.state != .idle else { return }
+
+                // Told to the engine as well as the panel, so the band is computed from
+                // the moment the panel is on, not from the next resume.
+                if self.engine.owner == .meeting {
+                    self.engine.publishesSpectrum = self.settings.showMeetingIndicator
+                }
 
                 if self.settings.showMeetingIndicator {
                     if !showing {

@@ -55,6 +55,18 @@ final class TranscriptionEngine {
     /// a recording starts, and not computed at all when nothing is drawing it.
     private(set) var spectrum: [Double] = []
 
+    /// Whether the audio loop computes the band.
+    ///
+    /// Read on every buffer rather than fixed when a session starts, so a panel
+    /// switched on mid-meeting starts moving at once instead of at the next resume.
+    /// Behind a lock because the audio loop reads it off the main actor.
+    @ObservationIgnored private let spectrumWanted = OSAllocatedUnfairLock(initialState: false)
+
+    var publishesSpectrum: Bool {
+        get { spectrumWanted.withLock { $0 } }
+        set { spectrumWanted.withLock { $0 = newValue } }
+    }
+
     private(set) var currentTranscript = ""
     private(set) var volatileText = ""  // Live, unconfirmed text
     private(set) var error: TranscriptionEngineError?
@@ -251,12 +263,13 @@ final class TranscriptionEngine {
         let targetFormat = analyzerFormat!
 
         let tap = audioTap
+        spectrumWanted.withLock { $0 = publishesSpectrum }
+        let spectrumWanted = self.spectrumWanted
 
         audioProcessingTask = Task.detached(priority: .userInitiated) { [weak self] in
             let converter = BufferConverter()
-            let spectrumAnalyzer = publishesSpectrum
-                ? SpectrumAnalyzer(bandCount: TranscriptionEngine.spectrumBandCount)
-                : nil
+            // Built the first time the band is wanted, which may be mid-session.
+            var spectrumAnalyzer: SpectrumAnalyzer?
             var bufferCount = 0
 
             for await audioData in audioStream {
@@ -269,7 +282,10 @@ final class TranscriptionEngine {
                 // Handed over without waiting. Waiting made this loop keep pace with the
                 // main thread, so a busy main thread backed buffers up here, and at stop
                 // anything not drained in time was dropped from the transcript.
-                if let bands = spectrumAnalyzer?.bands(from: audioData.buffer) {
+                if spectrumWanted.withLock({ $0 }), spectrumAnalyzer == nil {
+                    spectrumAnalyzer = SpectrumAnalyzer(bandCount: TranscriptionEngine.spectrumBandCount)
+                }
+                if spectrumWanted.withLock({ $0 }), let bands = spectrumAnalyzer?.bands(from: audioData.buffer) {
                     Task { @MainActor in self?.applySpectrum(bands) }
                 }
 
@@ -410,6 +426,9 @@ final class TranscriptionEngine {
         Self.log.notice("recording stopped, delivering \(self.currentTranscript.count, privacy: .public) chars; \(finalAtRelease, privacy: .public) of \(heardAtRelease, privacy: .public) were final at release; results \(drained ? "drained" : "cut off", privacy: .public) after \(drainMs, privacy: .public) ms")
         return currentTranscript
     }
+
+    /// Results loops that have not yet exited, across every session so far.
+    private nonisolated static let liveResultLoops = OSAllocatedUnfairLock(initialState: 0)
 
     /// How many bars the overlay's band has.
     nonisolated static let spectrumBandCount = 48
@@ -623,7 +642,17 @@ final class TranscriptionEngine {
 
         // Start recognition task to process results
         resultsEnded = false
+
+        // A results loop cancelled at stop ends only when another result arrives. If
+        // none ever does, it lives on, holding its transcriber. Counted so the log can
+        // show whether they pile up over days of uptime before anything is changed.
+        let alive = Self.liveResultLoops.withLock { $0 += 1; return $0 }
+        if alive > 1 {
+            Self.log.notice("results loops alive, including this one: \(alive, privacy: .public)")
+        }
+
         recognitionTask = Task { [weak self] in
+            defer { Self.liveResultLoops.withLock { $0 -= 1 } }
             var resultCount = 0
             do {
                 for try await result in transcriber.results {
