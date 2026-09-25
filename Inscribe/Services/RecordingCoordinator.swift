@@ -612,10 +612,11 @@ final class RecordingCoordinator {
     /// Keep the warmed AI session reading along as the recognizer confirms words.
     ///
     /// Once straight away, on the prompt and the text around the cursor, then every
-    /// second until release, new words or not: a warming fades within seconds. With
-    /// no words added, the first rewritten word came 735 ms after a request when the
-    /// only warming was five seconds old, and 500 ms when it was renewed each second.
-    /// Renewing cost the inference service about 0.05 s of CPU a second.
+    /// two seconds until release, new words or not, because a warming fades. After
+    /// eight seconds of talking, the first rewritten word came 810 ms after release
+    /// when the warming was seven seconds old, and 520 ms when it was two seconds old,
+    /// the same as renewing every second. Renewing every second cost the inference
+    /// service about 0.05 s of CPU a second.
     ///
     /// Word replacements are applied exactly as they will be at release, so the prefix
     /// matches the request character for character.
@@ -623,8 +624,8 @@ final class RecordingCoordinator {
         prefixWarmer?.cancel()
         let promptId = effectivePromptId
         prefixWarmer = Task { [weak self] in
-            for second in 0... {
-                if second > 0 { try? await Task.sleep(for: .seconds(1)) }
+            for round in 0... {
+                if round > 0 { try? await Task.sleep(for: .seconds(2)) }
                 guard let self, self.isRecording, !Task.isCancelled else { return }
                 let confirmed = self.engine.currentTranscript
                 self.aiProcessor.warmPrefix(
