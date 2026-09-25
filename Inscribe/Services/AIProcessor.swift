@@ -252,7 +252,7 @@ final class AIProcessor {
                     options: options
                 )
             }
-            return try cleaned(result.text)
+            return keepingWords(of: text, in: try cleaned(result.text), for: prompt)
 
         } catch FoundationModelsError.contextWindowExceeded {
             lastError = .contextWindowExceeded
@@ -270,7 +270,7 @@ final class AIProcessor {
                     prompt: userPrompt,
                     options: options
                 )
-                let result = try cleaned(retried)
+                let result = keepingWords(of: text, in: try cleaned(retried), for: prompt)
                 Log.ai.notice("Recovered from a guardrail violation by asking for plain text")
                 return result
             } catch {
@@ -315,6 +315,16 @@ final class AIProcessor {
 
             \(request)
             """
+    }
+
+    /// Hold a prompt that keeps the speaker's words to it; see `WordGuard`.
+    private func keepingWords(of said: String, in rewrite: String, for prompt: Prompt) -> String {
+        guard prompt.keepsWords else { return rewrite }
+        let outcome = WordGuard.apply(said: said, rewrite: rewrite)
+        if outcome.restored > 0 || outcome.removed > 0 {
+            Log.ai.notice("Word check put back \(outcome.restored, privacy: .public) words and took out \(outcome.removed, privacy: .public) added ones")
+        }
+        return outcome.text
     }
 
     private func cleaned(_ text: String) throws -> String {
