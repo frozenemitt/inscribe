@@ -1296,6 +1296,12 @@ struct HotkeySettingsView: View {
 // MARK: - Output Settings (macOS only)
 
 #if os(macOS)
+/// What happens once the text is in the field. Stored as the two switches that came
+/// before it, so an existing choice of Return carries over.
+private enum AfterTyping: Hashable {
+    case nothing, addSpace, pressReturn
+}
+
 struct OutputSettingsView: View {
     /// One labelled slider with its value beside it. Two of these read as a pair.
     private func solidityRow(_ label: String, value: Binding<Double>) -> some View {
@@ -1336,7 +1342,20 @@ struct OutputSettingsView: View {
                 Section("Typing") {
                     Toggle("Restore my previous clipboard afterwards", isOn: $settings.restoreClipboardAfterPaste)
 
-                    Toggle("Press Return after typing", isOn: $settings.autoSubmitAfterInsert)
+                    Picker("After typing", selection: Binding(
+                        get: {
+                            settings.autoSubmitAfterInsert ? AfterTyping.pressReturn
+                                : settings.addSpaceAfterInsert ? .addSpace : .nothing
+                        },
+                        set: {
+                            settings.autoSubmitAfterInsert = $0 == .pressReturn
+                            settings.addSpaceAfterInsert = $0 == .addSpace
+                        }
+                    )) {
+                        Text("Nothing").tag(AfterTyping.nothing)
+                        Text("Add a space").tag(AfterTyping.addSpace)
+                        Text("Press Return").tag(AfterTyping.pressReturn)
+                    }
 
                     if settings.autoSubmitAfterInsert {
                         Toggle("Use Shift+Return instead", isOn: $settings.useShiftReturnAfterInsert)

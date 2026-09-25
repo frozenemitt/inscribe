@@ -157,13 +157,15 @@ enum TextInsertionService {
     ///   - autoSubmit: Press a Return key after inserting.
     ///   - submitUsesShift: Send Shift+Return instead of Return, so chat apps add a
     ///     line break rather than sending the message.
+    ///   - addSpace: Paste a space after the text, so the next words carry on from it.
     @discardableResult
     static func deliver(
         _ text: String,
         targetApp: NSRunningApplication? = nil,
         restoreClipboard: Bool = true,
         autoSubmit: Bool = false,
-        submitUsesShift: Bool = false
+        submitUsesShift: Bool = false,
+        addSpace: Bool = false
     ) async -> TextInsertionOutcome {
 
         guard !text.isEmpty else {
@@ -219,7 +221,7 @@ enum TextInsertionService {
         // clipboard managers do not keep every dictation.
         // The pasteboard holds the text by the time this returns: another process read
         // it straight after the write in 30 of 30 tries. So ⌘V goes at once.
-        let pasteChange = ClipboardService.copy(text, transient: restoreClipboard)
+        let pasteChange = ClipboardService.copy(addSpace ? text + " " : text, transient: restoreClipboard)
 
         guard postPasteKeystroke() else {
             log.error("Could not post ⌘V — text left on the clipboard")
