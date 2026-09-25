@@ -245,9 +245,9 @@ final class TranscriptionEngine {
         let helper = AudioCaptureHelper()
         let audioStream: AsyncStream<AudioData>
         do {
-            audioStream = try helper.startCapture(preferredDeviceUID: inputDeviceUID)
+            audioStream = try await helper.start(preferredDeviceUID: inputDeviceUID)
         } catch {
-            helper.stopCapture()
+            await helper.stop()
             teardownSession()
             release()
             throw error
@@ -338,8 +338,9 @@ final class TranscriptionEngine {
 
         // Stop audio capture helper. This finishes the audio stream, so the task
         // below runs out of buffers on its own.
-        audioCaptureHelper?.stopCapture()
+        let helper = audioCaptureHelper
         audioCaptureHelper = nil
+        await helper?.stop()
 
         // Awaited rather than cancelled. An AsyncStream iterator throws away whatever
         // is still buffered when it is cancelled, and what is still buffered is
@@ -409,6 +410,14 @@ final class TranscriptionEngine {
         let drained = resultsEnded
         let drainTime = ContinuousClock.now - drainStarted
         recognitionTask?.cancel()
+
+        // A cancelled loop only notices once another result arrives, and when none
+        // does it waits for ever, holding the transcriber. Ending the analysis ends the
+        // results stream, so the loop finishes now. Bounded like every other await
+        // here. Only when the loop was cut off: a drained one has already finished.
+        if !drained, let analyzer {
+            _ = await Self.bounded(1) { await analyzer.cancelAndFinishNow() }
+        }
 
         recognitionTask = nil
         teardownSession()
@@ -499,7 +508,7 @@ final class TranscriptionEngine {
         Self.log.notice("recording cancelled")
         release()
 
-        audioCaptureHelper?.stopCapture()
+        audioCaptureHelper?.stopSoon()
         audioCaptureHelper = nil
         audioProcessingTask?.cancel()
         audioProcessingTask = nil
@@ -799,7 +808,8 @@ final class TranscriptionEngine {
     private func teardownSession() {
         // Stopped explicitly rather than left to deinit: AVAudioEngine.stop() blocks,
         // and deinit runs on whichever thread happens to drop the last reference.
-        audioCaptureHelper?.stopCapture()
+        // Handed to the capture queue, which keeps it off the main thread.
+        audioCaptureHelper?.stopSoon()
         audioCaptureHelper = nil
 
         audioProcessingTask?.cancel()

@@ -15,7 +15,46 @@ final class AudioCaptureHelper: @unchecked Sendable {
 
     private(set) var isRunning = false
 
+    /// Where every start and stop runs: off the main thread, and one at a time.
+    ///
+    /// Starting the engine takes 39–44 ms with the built-in microphone and can take far
+    /// longer with a Bluetooth one, and it used to run on the main thread, freezing
+    /// the app for as long as the device took. Serial, so a stop always finishes before
+    /// the next start touches the device.
+    private static let queue = DispatchQueue(label: "com.inscribe.audio-capture", qos: .userInitiated)
+
     init() {}
+
+    /// `startCapture`, run on the capture queue.
+    func start(preferredDeviceUID: String = "default") async throws -> AsyncStream<AudioData> {
+        try await withCheckedThrowingContinuation { continuation in
+            Self.queue.async {
+                do {
+                    continuation.resume(returning: try self.startCapture(preferredDeviceUID: preferredDeviceUID))
+                } catch {
+                    continuation.resume(throwing: error)
+                }
+            }
+        }
+    }
+
+    /// `stopCapture`, run on the capture queue, waiting until it has finished.
+    func stop() async {
+        await withCheckedContinuation { continuation in
+            Self.queue.async {
+                self.stopCapture()
+                continuation.resume()
+            }
+        }
+    }
+
+    /// `stopCapture`, run on the capture queue, without waiting.
+    ///
+    /// For paths that cannot wait. The queue is serial, so a start that follows still
+    /// finds the device released.
+    func stopSoon() {
+        Self.queue.async { self.stopCapture() }
+    }
 
     /// Start capturing audio and return a stream of audio buffers
     /// - Parameter preferredDeviceUID: CoreAudio UID of the microphone to record from,
