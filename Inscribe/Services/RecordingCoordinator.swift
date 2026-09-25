@@ -269,28 +269,16 @@ final class RecordingCoordinator {
             return
         }
 
-        #if os(macOS)
-        // Chromium-based apps need to be told to build an accessibility tree, and it
-        // takes them a moment. Asked once the microphone is open, not before: the call
-        // waits on the target app, and a busy app made the user's first words wait too.
-        TextInsertionService.prepareForInsertion(into: targetApp)
-        #endif
-
         // Load the model while the user is still speaking. It has to be in memory
         // before it can answer, and that load used to begin only once they had
         // finished — seconds of waiting bolted onto seconds of talking.
-        surroundingText = nil
-        if settings.aiEnabled, !skipAIOnce {
+        let usesAI = settings.aiEnabled && !skipAIOnce
+        if usesAI {
             aiProcessor.prewarm(promptId: effectivePromptId)
-            #if os(macOS)
-            if settings.useSurroundingContext {
-                surroundingText = TextInsertionService.focusedFieldContext(in: targetApp)
-            }
-            #endif
-            startPrefixWarmer()
         }
 
         // Sounded only once capture is live, so the user does not talk over the gap.
+        // Nothing slow may come before it: the user waits for this sound to speak.
         AudioFeedbackService.shared.playIfEnabled(.recordingStarted, settings: settings)
         startMaxDurationWatchdog()
 
@@ -301,6 +289,27 @@ final class RecordingCoordinator {
         }
         #endif
         Log.dictation.notice("Recording started")
+
+        // Accessibility work on the target app, after the sound and the panel and
+        // outside the start the release waits for. Each call waits on the target app,
+        // and reading the field of an Electron app held the start sound back by up to
+        // 0.37 s.
+        surroundingText = nil
+        #if os(macOS)
+        let target = targetApp
+        let wantsContext = usesAI && settings.useSurroundingContext
+        Task { [weak self] in
+            // Chromium-based apps need to be told to build an accessibility tree, and
+            // it takes them a moment. Asking now means it is ready by the time we
+            // deliver.
+            TextInsertionService.prepareForInsertion(into: target)
+            guard let self, wantsContext, self.isRecording else { return }
+            self.surroundingText = TextInsertionService.focusedFieldContext(in: target)
+        }
+        #endif
+        if usesAI {
+            startPrefixWarmer()
+        }
     }
 
     /// Stop, transcribe, optionally run the AI pass, then deliver the text.
