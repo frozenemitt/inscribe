@@ -306,13 +306,19 @@ final class RecordingCoordinator {
             // it takes them a moment. Asking now means it is ready by the time we
             // deliver.
             TextInsertionService.prepareForInsertion(into: target)
-            guard let self, wantsContext, self.isRecording else { return }
-            self.surroundingText = TextInsertionService.focusedFieldContext(in: target)
+            guard let self, self.isRecording else { return }
+            if wantsContext {
+                self.surroundingText = TextInsertionService.focusedFieldContext(in: target)
+            }
+            // Only now, since the request opens with the text around the cursor and a
+            // warmed prefix without it would match nothing.
+            if usesAI { self.startPrefixWarmer() }
         }
-        #endif
+        #else
         if usesAI {
             startPrefixWarmer()
         }
+        #endif
     }
 
     /// Stop, transcribe, optionally run the AI pass, then deliver the text.
@@ -605,20 +611,22 @@ final class RecordingCoordinator {
 
     /// Keep the warmed AI session reading along as the recognizer confirms words.
     ///
-    /// Once a second, and only when a real stretch has been added, since each warming
-    /// reads the whole prefix again. Word replacements are applied exactly as they
-    /// will be at release, so the prefix matches the request character for character.
+    /// Once straight away, on the prompt and the text around the cursor, then every
+    /// second until release, new words or not: a warming fades within seconds. With
+    /// no words added, the first rewritten word came 735 ms after a request when the
+    /// only warming was five seconds old, and 500 ms when it was renewed each second.
+    /// Renewing cost the inference service about 0.05 s of CPU a second.
+    ///
+    /// Word replacements are applied exactly as they will be at release, so the prefix
+    /// matches the request character for character.
     private func startPrefixWarmer() {
         prefixWarmer?.cancel()
         let promptId = effectivePromptId
         prefixWarmer = Task { [weak self] in
-            var warmedLength = 0
-            while !Task.isCancelled {
-                try? await Task.sleep(for: .seconds(1))
+            for second in 0... {
+                if second > 0 { try? await Task.sleep(for: .seconds(1)) }
                 guard let self, self.isRecording, !Task.isCancelled else { return }
                 let confirmed = self.engine.currentTranscript
-                guard confirmed.count >= warmedLength + 40 else { continue }
-                warmedLength = confirmed.count
                 self.aiProcessor.warmPrefix(
                     promptId: promptId,
                     transcriptSoFar: TextProcessor.process(confirmed, replacements: self.settings.wordReplacements),
