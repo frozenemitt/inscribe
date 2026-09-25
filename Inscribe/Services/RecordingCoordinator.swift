@@ -269,6 +269,14 @@ final class RecordingCoordinator {
             return
         }
 
+        // Sounded only once capture is live, so the user does not talk over the gap:
+        // `startRecording` returns after the audio engine has started, and every
+        // buffer from that moment on is kept. Nothing may come before it, since the
+        // user waits for this sound to speak.
+        AudioFeedbackService.shared.playIfEnabled(.recordingStarted, settings: settings)
+        Log.dictation.notice("Start sound played")
+        startMaxDurationWatchdog()
+
         // Load the model while the user is still speaking. It has to be in memory
         // before it can answer, and that load used to begin only once they had
         // finished — seconds of waiting bolted onto seconds of talking.
@@ -276,11 +284,6 @@ final class RecordingCoordinator {
         if usesAI {
             aiProcessor.prewarm(promptId: effectivePromptId)
         }
-
-        // Sounded only once capture is live, so the user does not talk over the gap.
-        // Nothing slow may come before it: the user waits for this sound to speak.
-        AudioFeedbackService.shared.playIfEnabled(.recordingStarted, settings: settings)
-        startMaxDurationWatchdog()
 
         #if os(macOS)
         if settings.showDictationOverlay {
