@@ -95,6 +95,13 @@ struct Prompt: Identifiable, Codable, Equatable, Hashable {
     /// prompt saved before this changed still decodes without error.
     var maxResponseTokens: Int?
 
+    /// Whether the prompt corrects the speaker's words rather than rewriting them.
+    ///
+    /// When set, `WordGuard` holds the model to it: any word the model drops comes
+    /// back, and only punctuation, capitals, repeats and one-for-one word fixes get
+    /// through. Off for prompts whose point is to reword, such as a summary.
+    var keepsWords: Bool
+
     init(
         id: UUID = UUID(),
         name: String,
@@ -104,7 +111,8 @@ struct Prompt: Identifiable, Codable, Equatable, Hashable {
         isVisible: Bool = true,
         temperature: Double = 0.5,
         samplingMode: SamplingMode = .automatic,
-        maxResponseTokens: Int? = nil
+        maxResponseTokens: Int? = nil,
+        keepsWords: Bool = false
     ) {
         self.id = id
         self.name = name
@@ -115,6 +123,7 @@ struct Prompt: Identifiable, Codable, Equatable, Hashable {
         self.temperature = temperature
         self.samplingMode = samplingMode
         self.maxResponseTokens = maxResponseTokens
+        self.keepsWords = keepsWords
     }
 
     // Custom decoder for backward compatibility with saved prompts missing new fields
@@ -129,6 +138,7 @@ struct Prompt: Identifiable, Codable, Equatable, Hashable {
         temperature = try container.decodeIfPresent(Double.self, forKey: .temperature) ?? 0.5
         samplingMode = try container.decodeIfPresent(SamplingMode.self, forKey: .samplingMode) ?? .automatic
         maxResponseTokens = try container.decodeIfPresent(Int.self, forKey: .maxResponseTokens)
+        keepsWords = try container.decodeIfPresent(Bool.self, forKey: .keepsWords) ?? false
     }
 
     /// Apply the prompt template to transcribed text.
@@ -268,7 +278,8 @@ final class PromptConfiguration {
             - Do NOT change, add, or remove any words — only add punctuation and capitalization
             - Preserve the exact wording and order of the original text
             """,
-            isBuiltIn: true
+            isBuiltIn: true,
+            keepsWords: true
         ),
         Prompt(
             id: UUID(uuidString: "00000000-0000-0000-0000-000000000000")!,
@@ -355,7 +366,8 @@ final class PromptConfiguration {
             isVisible: prompt.isVisible,
             temperature: prompt.temperature,
             samplingMode: prompt.samplingMode,
-            maxResponseTokens: prompt.maxResponseTokens
+            maxResponseTokens: prompt.maxResponseTokens,
+            keepsWords: prompt.keepsWords
         )
         prompts.append(newPrompt)
         savePrompts()

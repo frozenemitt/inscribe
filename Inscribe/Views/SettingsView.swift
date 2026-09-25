@@ -513,6 +513,7 @@ struct PromptDetailView: View {
     @State private var name: String
     @State private var systemPrompt: String
     @State private var userTemplate: String
+    @State private var keepsWords: Bool
 
     // Generation settings state
     @State private var temperature: Double
@@ -537,6 +538,7 @@ struct PromptDetailView: View {
         self._name = State(initialValue: prompt.name)
         self._systemPrompt = State(initialValue: prompt.systemPrompt)
         self._userTemplate = State(initialValue: prompt.userTemplate)
+        self._keepsWords = State(initialValue: prompt.keepsWords)
         self._temperature = State(initialValue: prompt.temperature)
         self._samplingModeTag = State(initialValue: prompt.samplingMode.caseTag)
         // Extract associated values for sub-controls
@@ -587,6 +589,14 @@ struct PromptDetailView: View {
                     .disabled(!canEdit)
 
                 Text("Your transcription is automatically appended after these instructions.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            Section("Your Words") {
+                Toggle("Keep my words", isOn: $keepsWords)
+                    .disabled(!canEdit)
+                Text("For prompts that correct rather than rewrite. Any word the model drops is put back, and only punctuation, capitals, repeated words and one-for-one word fixes get through.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -651,7 +661,8 @@ struct PromptDetailView: View {
                                 // prompt wholesale, so anything left out is reset.
                                 isVisible: prompt.isVisible,
                                 temperature: temperature,
-                                samplingMode: currentSamplingMode
+                                samplingMode: currentSamplingMode,
+                                keepsWords: keepsWords
                             )
                             onSave(updated)
                         }
@@ -672,7 +683,8 @@ struct PromptDetailView: View {
                             userTemplate: userTemplate,
                             isBuiltIn: false,
                             temperature: temperature,
-                            samplingMode: currentSamplingMode
+                            samplingMode: currentSamplingMode,
+                            keepsWords: keepsWords
                         )
                         onDuplicate(duplicate)
                     } label: {
@@ -694,6 +706,7 @@ struct PromptDetailView: View {
             name = newPrompt.name
             systemPrompt = newPrompt.systemPrompt
             userTemplate = newPrompt.userTemplate
+            keepsWords = newPrompt.keepsWords
             temperature = newPrompt.temperature
             samplingModeTag = newPrompt.samplingMode.caseTag
             switch newPrompt.samplingMode {
@@ -736,7 +749,8 @@ struct PromptDetailView: View {
     private var hasTextChanges: Bool {
         name != prompt.name ||
         systemPrompt != prompt.systemPrompt ||
-        userTemplate != prompt.userTemplate
+        userTemplate != prompt.userTemplate ||
+        keepsWords != prompt.keepsWords
     }
 
     private var hasGenerationChanges: Bool {
