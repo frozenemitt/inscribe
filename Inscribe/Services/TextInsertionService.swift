@@ -157,13 +157,15 @@ enum TextInsertionService {
     ///   - autoSubmit: Press a Return key after inserting.
     ///   - submitUsesShift: Send Shift+Return instead of Return, so chat apps add a
     ///     line break rather than sending the message.
+    ///   - addSpace: Paste a space after the text, so the next words carry on from it.
     @discardableResult
     static func deliver(
         _ text: String,
         targetApp: NSRunningApplication? = nil,
         restoreClipboard: Bool = true,
         autoSubmit: Bool = false,
-        submitUsesShift: Bool = false
+        submitUsesShift: Bool = false,
+        addSpace: Bool = false
     ) async -> TextInsertionOutcome {
 
         guard !text.isEmpty else {
@@ -217,7 +219,7 @@ enum TextInsertionService {
 
         // Marked as momentary when the user's clipboard goes back afterwards, so
         // clipboard managers do not keep every dictation.
-        let pasteChange = ClipboardService.copy(text, transient: restoreClipboard)
+        let pasteChange = ClipboardService.copy(addSpace ? text + " " : text, transient: restoreClipboard)
 
         // Give the pasteboard a moment to settle before the receiving app reads it.
         try? await Task.sleep(for: .milliseconds(50))

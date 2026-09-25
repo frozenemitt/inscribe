@@ -222,6 +222,12 @@ final class AppSettings {
         didSet { save("autoSubmitAfterInsert", autoSubmitAfterInsert) }
     }
 
+    /// Paste a space after the text, so the next dictation or typed word carries on
+    /// the sentence. Pressing Return, when that is on, takes its place.
+    var addSpaceAfterInsert: Bool {
+        didSet { save("addSpaceAfterInsert", addSpaceAfterInsert) }
+    }
+
     /// Send Shift+Return rather than Return.
     ///
     /// Chat apps read a bare Return as "send". Shift+Return drops to a new line and
@@ -275,6 +281,7 @@ final class AppSettings {
         self.meetingIndicatorOriginY = UserDefaults.standard.object(forKey: "meetingIndicatorOriginY") as? Double
         self.showMeetingIndicator = UserDefaults.standard.object(forKey: "showMeetingIndicator") as? Bool ?? true
         self.useShiftReturnAfterInsert = UserDefaults.standard.object(forKey: "useShiftReturnAfterInsert") as? Bool ?? false
+        self.addSpaceAfterInsert = UserDefaults.standard.object(forKey: "addSpaceAfterInsert") as? Bool ?? false
         self.maxRecordingSeconds = UserDefaults.standard.object(forKey: "maxRecordingSeconds") as? Int ?? 600
         self.wordReplacements = UserDefaults.standard.dictionary(forKey: "wordReplacements") as? [String: String] ?? [:]
         self.vocabularyHints = UserDefaults.standard.stringArray(forKey: "vocabularyHints") ?? []
@@ -370,6 +377,7 @@ final class AppSettings {
         meetingIndicatorOriginY = nil
         showMeetingIndicator = true
         useShiftReturnAfterInsert = false
+        addSpaceAfterInsert = false
         maxRecordingSeconds = 600
         wordReplacements = [:]
         vocabularyHints = []
