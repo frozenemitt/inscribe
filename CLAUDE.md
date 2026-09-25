@@ -16,6 +16,6 @@ xcodebuild clean -project Inscribe.xcodeproj -scheme Inscribe
 
 ## Constraints
 
-- **Minimum targets**: iOS 26 / macOS 26 — use only APIs available on these platforms
+- **Minimum targets**: macOS 27 (iOS 26 for the iOS target, which is not in use) — use only APIs available on these platforms
 - **Fully offline**: No network calls. All processing (transcription, AI, diarization) is on-device
 - **Privacy first**: Never send user data to external servers

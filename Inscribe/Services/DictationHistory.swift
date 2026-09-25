@@ -13,6 +13,10 @@ enum DictationHistory {
     private static let log = Logger(subsystem: "com.inscribe.app", category: "History")
 
     /// Store a dictation and trim anything past the limit.
+    ///
+    /// Returns the stored entry, so a caller that keeps the words before delivering
+    /// them can fill in where they went afterwards.
+    @discardableResult
     static func record(
         text: String,
         rawText: String?,
@@ -20,11 +24,11 @@ enum DictationHistory {
         promptName: String?,
         settings: AppSettings,
         in context: ModelContext
-    ) {
-        guard settings.keepDictationHistory else { return }
+    ) -> Dictation? {
+        guard settings.keepDictationHistory else { return nil }
 
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return }
+        guard !trimmed.isEmpty else { return nil }
 
         let entry = Dictation(
             text: text,
@@ -36,6 +40,7 @@ enum DictationHistory {
 
         prune(to: settings.dictationHistoryLimit, in: context)
         context.saveOrLog()
+        return entry
     }
 
     /// Drop the oldest entries beyond `limit`.

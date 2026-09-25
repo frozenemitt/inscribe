@@ -9,7 +9,7 @@ Inscribe is a dictation tool for macOS. Transcription runs on Apple's SpeechTran
 
 ## System Requirements
 
-- **macOS 26 or newer** — the app is macOS-first; the iOS target builds but has no dictation hotkey
+- **macOS 27 or newer** — the app is macOS-first; the iOS target builds but has no dictation hotkey
 - **Xcode 26** with the Swift 6.2+ toolchain
 
 ## Permissions

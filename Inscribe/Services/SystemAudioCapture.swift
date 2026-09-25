@@ -3,6 +3,7 @@ import Foundation
 #if os(macOS)
 import CoreAudio
 import AVFoundation
+import Accelerate
 import os
 
 /// Captures what the Mac is playing, alongside the microphone.
@@ -17,7 +18,13 @@ import os
 /// arrive on one clock, already sample-aligned. Mixing two independently clocked
 /// devices in software would drift, and drift wrecks the timestamps diarization
 /// depends on.
-final class SystemAudioCapture {
+///
+/// Sendable so that building and destroying the device can run off the main thread:
+/// each is a round trip to the audio server that can take hundreds of milliseconds,
+/// and on the main thread the whole app froze for it. Unchecked, because the safety
+/// comes from the one caller, a meeting, whose steps run one after another and each
+/// wait for the last; no two calls on one instance ever overlap.
+final class SystemAudioCapture: @unchecked Sendable {
 
     private static let log = Logger(subsystem: "com.inscribe.app", category: "SystemAudio")
 
@@ -44,7 +51,15 @@ final class SystemAudioCapture {
         let tap = try createGlobalTap()
         tapID = tap.id
 
-        let micUID = microphoneUID ?? Self.defaultInputUID()
+        // The chosen microphone only if it is still connected, and the default input
+        // otherwise. An unplugged microphone keeps its UID, and an aggregate that lists
+        // a device which is not there carries only the tap: the call without the user.
+        var chosenUID = microphoneUID
+        if let microphoneUID, AudioDeviceCatalog.resolveDeviceID(uid: microphoneUID) == nil {
+            Self.log.notice("Chosen microphone is not connected; using the default input")
+            chosenUID = nil
+        }
+        let micUID = chosenUID ?? Self.defaultInputUID()
         let uid = "com.inscribe.aggregate.\(UUID().uuidString)"
 
         var subDevices: [[String: Any]] = []
@@ -242,6 +257,78 @@ final class SystemAudioCapture {
     static func openSystemSettings() {
         let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture")!
         NSWorkspace.shared.open(url)
+    }
+}
+
+/// Notices whether any system audio has reached the meeting.
+///
+/// A refused permission may not refuse the tap. `checkAvailability()` creates one, sees
+/// it succeed and reports the permission granted, and the meeting then records the tap
+/// faithfully: silence, for the whole call. Whether macOS behaves that way could not be
+/// confirmed here, so this is the cheapest signal that catches it either way: if the
+/// tap's channels hold nothing but silence for the first minute, the meeting says so.
+///
+/// Silence is also what a tap hears before anyone on the call speaks, which is why the
+/// warning waits a minute and is worded as something to check rather than a verdict.
+final class SystemAudioLevelProbe: @unchecked Sendable {
+
+    /// Quieter than this is silence: about -100 dBFS, below any real playback.
+    private static let threshold: Float = 0.00001
+
+    private let lock = NSLock()
+    private var heard = false
+
+    var hasHeardSound: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return heard
+    }
+
+    func reset() {
+        lock.lock()
+        heard = false
+        lock.unlock()
+    }
+
+    /// Look for sound on the tap's channels, which the aggregate puts last: a stereo
+    /// pair after the microphone's own.
+    ///
+    /// Runs on the audio thread for every buffer until the first sound, then only reads
+    /// the flag.
+    func inspect(_ buffer: AVAudioPCMBuffer) {
+        guard !hasHeardSound else { return }
+
+        let channels = Int(buffer.format.channelCount)
+        let frames = vDSP_Length(buffer.frameLength)
+        guard channels > 0, frames > 0 else { return }
+
+        // A format this cannot read is not evidence of silence, so it counts as heard
+        // rather than raising a warning nobody can act on.
+        guard let data = buffer.floatChannelData else {
+            markHeard()
+            return
+        }
+
+        var peak: Float = 0
+        for channel in max(0, channels - 2)..<channels {
+            var channelPeak: Float = 0
+            if buffer.format.isInterleaved {
+                vDSP_maxmgv(data[0] + channel, vDSP_Stride(channels), &channelPeak, frames)
+            } else {
+                vDSP_maxmgv(data[channel], 1, &channelPeak, frames)
+            }
+            peak = max(peak, channelPeak)
+        }
+
+        if peak > Self.threshold {
+            markHeard()
+        }
+    }
+
+    private func markHeard() {
+        lock.lock()
+        heard = true
+        lock.unlock()
     }
 }
 

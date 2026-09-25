@@ -1,4 +1,5 @@
 import Foundation
+import FoundationModels
 import os
 import Observation
 import SwiftData
@@ -32,7 +33,11 @@ final class MeetingRecorder {
     private let diarizer = MeetingDiarizer()
     private let converter = DiarizationAudioConverter()
     private let systemAudio = SystemAudioCapture()
+    private let systemAudioProbe = SystemAudioLevelProbe()
     private let audioWriter = MeetingAudioWriter()
+
+    /// Whether this meeting has had its one look at the system-audio level.
+    private var systemAudioLevelChecked = false
 
     // MARK: - Observable State
 
@@ -86,6 +91,29 @@ final class MeetingRecorder {
     /// report the meeting written and let the app terminate through the middle of it.
     private var finishTask: Task<Void, Never>?
 
+    /// The pause or resume begun by `pause()` or `resume()`, while it is still running.
+    ///
+    /// Either one takes a few hundred milliseconds of engine work, and the state does not
+    /// change until it is over. Without this, a second click in that window passed the
+    /// state guard and ran the same step again: two resumes started the engine twice, and
+    /// two pauses harvested the same session twice and doubled every word. A stop or a
+    /// quit arriving in that window tore the meeting down underneath the step, which then
+    /// finished against a meeting that no longer existed. Pause and resume refuse to begin
+    /// while this is set, and stop waits for it.
+    ///
+    /// Cleared by the task itself as its last act, on the main actor, so a stop waiting on
+    /// it never sees it cleared late and never mistakes a finished step for one running.
+    private var transitionTask: Task<Void, Never>?
+
+    /// Saves the meeting so far every half minute while it records.
+    ///
+    /// Everything else reaches the store only at a pause or at stop, so a crash or a
+    /// force quit mid-session used to lose the whole transcript.
+    private var checkpointTask: Task<Void, Never>?
+
+    /// Pauses the meeting when its microphone goes away.
+    @ObservationIgnored private var interruptionObserver: (any NSObjectProtocol)?
+
     /// Ordered handoff of captured audio to the diarizer.
     ///
     /// The tap runs on the audio thread and the diarizer is an actor, so the handoff
@@ -117,6 +145,11 @@ final class MeetingRecorder {
     var isRecording: Bool { state == .recording }
     var isPaused: Bool { state == .paused }
 
+    /// Forget the last error, once the user has moved on from the meeting it belongs to.
+    func clearError() {
+        lastError = nil
+    }
+
     /// Whether a meeting is open, recording or not.
     ///
     /// Read off `state` alone rather than `activeMeeting`, which stays nil until a
@@ -132,7 +165,78 @@ final class MeetingRecorder {
         self.aiProcessor = aiProcessor
         #if os(macOS)
         self.indicator = MeetingIndicatorController(settings: settings)
+
+        // At launch, before anything can load a speaker model.
+        DiarizationModelStore.stayOffline()
         #endif
+
+        // A microphone that changes mid-meeting ends the capture: AirPods connecting, a
+        // USB microphone unplugged. Pause rather than carry on recording silence, and
+        // say why; Resume picks up whichever microphone is current.
+        interruptionObserver = NotificationCenter.default.addObserver(
+            forName: TranscriptionEngine.captureInterruptedNotification,
+            object: engine,
+            queue: .main
+        ) { [weak self] note in
+            guard (note.userInfo?["owner"] as? TranscriptionEngine.SessionOwner) == .meeting else { return }
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                Log.meetings.error("Microphone changed mid-meeting — pausing")
+                Task {
+                    await self.pause()
+                    self.lastError = "The microphone changed, so the meeting paused. Press Resume to carry on with the current microphone."
+                }
+            }
+        }
+
+        // Built once, at launch, before any meeting can start: every meeting still open
+        // in the store at this point is one a crash or a force quit never let finish.
+        Task { @MainActor [weak self] in
+            self?.closeInterruptedMeetings(in: ScribeApp.modelContainer.mainContext)
+        }
+    }
+
+    /// Close the meetings a crash or a force quit left open.
+    ///
+    /// Such a meeting has no end, so every list showed it as still running and its
+    /// length growing for ever. Its recording was never closed either, which leaves an
+    /// AAC file with audio in it but no index, one AVAudioPlayer cannot open; the
+    /// playback bar offered it and then did nothing. That file is deleted, because
+    /// nothing in the app can read it, and the meeting stops pointing at it.
+    ///
+    /// The end is placed where the last checkpoint's audio ran out, the last moment
+    /// known to have been captured. The transcript is whatever that checkpoint saved.
+    private func closeInterruptedMeetings(in context: ModelContext) {
+        guard state == .idle else { return }
+
+        let open = FetchDescriptor<Meeting>(predicate: #Predicate { $0.endedAt == nil })
+        let meetings: [Meeting]
+        do {
+            meetings = try context.fetch(open)
+        } catch {
+            Log.meetings.error("Could not look for interrupted meetings: \(error, privacy: .public)")
+            return
+        }
+        guard !meetings.isEmpty else { return }
+
+        for meeting in meetings {
+            if meeting.audioFileName != nil,
+               !MeetingAudioStore.isPlayable(fileNamed: meeting.audioFileName) {
+                MeetingAudioStore.delete(fileNamed: meeting.audioFileName)
+                meeting.audioFileName = nil
+            }
+            meeting.endedAt = meeting.startedAt.addingTimeInterval(meeting.recordedDuration)
+
+            // Checkpoints save the words as heard; the replacements a finished meeting
+            // gets at stop() are applied here instead.
+            meeting.rawTranscript = TextProcessor.process(
+                meeting.rawTranscript,
+                replacements: settings.wordReplacements
+            )
+        }
+
+        context.saveOrLog()
+        Log.meetings.notice("Closed \(meetings.count, privacy: .public) meetings left open by a crash or force quit")
     }
 
     #if os(macOS)
@@ -140,8 +244,11 @@ final class MeetingRecorder {
     ///
     /// Twenty a second, like the dictation overlay: the band is drawn from the
     /// microphone and anything slower reads as lag.
+    ///
+    /// Runs for every meeting, whether or not the panel is switched on, and follows
+    /// the setting as it changes. Read only when the meeting began, switching the panel
+    /// on or off mid-meeting did nothing until the next one.
     private func startIndicator() {
-        guard settings.showMeetingIndicator else { return }
         indicatorTicker?.cancel()
 
         // The panel's buttons reach back here, so pausing or ending a meeting does not
@@ -159,16 +266,39 @@ final class MeetingRecorder {
             }
         }
 
-        indicator.show()
         indicatorTicker = Task { @MainActor [weak self] in
+            var showing = false
             while !Task.isCancelled {
                 guard let self, self.state != .idle else { return }
-                self.indicator.update(
-                    spectrum: self.engine.spectrum,
-                    seconds: self.recordedSeconds,
-                    isPaused: self.isPaused
-                )
-                try? await Task.sleep(for: .milliseconds(50))
+
+                // Told to the engine as well as the panel, so the band is computed from
+                // the moment the panel is on, not from the next resume.
+                if self.engine.owner == .meeting {
+                    self.engine.publishesSpectrum = self.settings.showMeetingIndicator
+                }
+
+                if self.settings.showMeetingIndicator {
+                    if !showing {
+                        self.indicator.show()
+                        showing = true
+                    }
+                    self.indicator.update(
+                        // The engine's band belongs to whoever owns the engine. During
+                        // a pause that can be a dictation, and the meeting's panel drew
+                        // its voice as though the meeting were still listening.
+                        spectrum: self.engine.owner == .meeting ? self.engine.spectrum : [],
+                        seconds: self.recordedSeconds,
+                        isPaused: self.isPaused,
+                        error: self.lastError
+                    )
+                } else if showing {
+                    self.indicator.hide()
+                    showing = false
+                }
+
+                // Only the setting is watched while the panel is off, and a tenth of a
+                // second is soon enough for that.
+                try? await Task.sleep(for: .milliseconds(showing ? 50 : 100))
             }
         }
     }
@@ -240,15 +370,25 @@ final class MeetingRecorder {
         keepingAudio = settings.keepMeetingAudio
         if keepingAudio {
             meeting.audioFileName = audioWriter.begin()
+            // Saved at once. The file starts filling with the first buffer, and a crash
+            // before the next save would leave it on disk with no meeting naming it,
+            // where nothing ever finds or deletes it.
+            context.saveOrLog()
         }
 
+        systemAudioProbe.reset()
+        systemAudioLevelChecked = false
+
+        // Resolved before the tap is installed: building the system-audio device is
+        // awaited, and nothing should find the tap attached while it is.
+        let inputDeviceUID = await meetingInputDeviceUID()
         installAudioTap()
 
         do {
             try await engine.startRecording(
                 owner: .meeting,
                 contextualStrings: settings.vocabularyHints,
-                inputDeviceUID: meetingInputDeviceUID(),
+                inputDeviceUID: inputDeviceUID,
                 publishesSpectrum: settings.showMeetingIndicator
             )
         } catch {
@@ -264,14 +404,83 @@ final class MeetingRecorder {
             return
         }
 
-        sessionStartedAt = Date()
+        // The meeting is dated from here, not from when it was inserted. That was before
+        // the models loaded and the engine started, seconds earlier on a cold start,
+        // and those seconds made its wall-clock length exceed its audio, which reads as
+        // a pause that never happened.
+        let startedAt = Date()
+        sessionStartedAt = startedAt
+        meeting.startedAt = startedAt
         activeMeeting = meeting
         state = .recording
+        startCheckpoints()
         #if os(macOS)
         startIndicator()
         #endif
         AudioFeedbackService.shared.playIfEnabled(.recordingStarted, settings: settings)
         Log.meetings.notice("Meeting started, diarization: \(self.diarizationActive, privacy: .public)")
+    }
+
+    /// Save the meeting so far every half minute, for as long as it is open.
+    private func startCheckpoints() {
+        checkpointTask?.cancel()
+        checkpointTask = Task { @MainActor [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(30))
+                guard !Task.isCancelled, let self, self.state != .idle else { return }
+                self.checkpoint()
+            }
+        }
+    }
+
+    /// Write the live transcript and the audio captured so far into the meeting.
+    ///
+    /// Only while recording: a paused meeting was saved when it paused and has not
+    /// changed since, and a finishing one is about to be saved in full.
+    private func checkpoint() {
+        guard state == .recording, let meeting = activeMeeting else { return }
+        meeting.rawTranscript = liveTranscript
+        meeting.recordedDuration = recordedSeconds
+        meeting.modelContext?.saveOrLog()
+
+        // Checked here as well as at the end, so a failure shows while the meeting is
+        // still running rather than only after it has ended.
+        reportEngineError()
+        reportRecordingFailure()
+        checkSystemAudioLevel()
+    }
+
+    /// Say so, once, if system audio has been silent through the first minute.
+    ///
+    /// See `SystemAudioLevelProbe`: a refused permission may record silence rather than
+    /// fail, and Settings would still call system audio available.
+    private func checkSystemAudioLevel() {
+        guard systemAudioActive, !systemAudioLevelChecked, recordedSeconds >= 60 else { return }
+        systemAudioLevelChecked = true
+
+        guard !systemAudioProbe.hasHeardSound else { return }
+        lastError = "No system audio has been heard in the first minute. If the call is playing, check that Inscribe is allowed under Screen & System Audio Recording in System Settings."
+        Log.meetings.notice("System audio silent through the first minute")
+    }
+
+    /// Copy a failure the engine recorded into `lastError`.
+    ///
+    /// The engine keeps a recognizer failure mid-session, or a finalize that overran
+    /// its limit and lost the tail, in its own `error`. The meeting never read it, so
+    /// the transcript stopped growing, or lost its ending, with nothing on screen to
+    /// say so. Read right after each stop, before anything else can start the engine
+    /// and clear it, and at each checkpoint while the meeting owns it.
+    private func reportEngineError() {
+        if let error = engine.error {
+            lastError = error.localizedDescription
+        }
+    }
+
+    /// Copy a recording file that failed to open into `lastError`.
+    private func reportRecordingFailure() {
+        if let failure = audioWriter.failure {
+            lastError = "The recording could not be saved: \(failure)"
+        }
     }
 
     /// The device this meeting records from.
@@ -280,7 +489,7 @@ final class MeetingRecorder {
     /// system playback together. Falling back to the plain microphone on failure is
     /// deliberate: half a meeting beats none, and the reason is surfaced rather than
     /// swallowed.
-    private func meetingInputDeviceUID() -> String {
+    private func meetingInputDeviceUID() async -> String {
         guard settings.captureSystemAudioInMeetings else {
             systemAudioActive = false
             return settings.inputDeviceUID
@@ -294,7 +503,12 @@ final class MeetingRecorder {
             let micUID = settings.inputDeviceUID == AudioInputDevice.systemDefaultUID
                 ? nil
                 : settings.inputDeviceUID
-            let uid = try systemAudio.start(microphoneUID: micUID)
+            // Off the main thread: creating the tap and the aggregate device waits on
+            // the audio server, and on the main thread the whole app stalled for it.
+            let capture = systemAudio
+            let uid = try await Task.detached {
+                try capture.start(microphoneUID: micUID)
+            }.value
             systemAudioActive = true
             return uid
         } catch {
@@ -330,6 +544,7 @@ final class MeetingRecorder {
         let wantsDiarization = diarizationActive
         let wantsAudio = keepingAudio
         let audioConverter = converter
+        let probe = systemAudioActive ? systemAudioProbe : nil
 
         let (feed, continuation) = AsyncStream<[Float]>.makeStream()
         diarizerFeed = continuation
@@ -340,6 +555,7 @@ final class MeetingRecorder {
         }
 
         engine.audioTap = { buffer in
+            probe?.inspect(buffer)
             if wantsAudio {
                 writer.append(buffer)
             }
@@ -368,18 +584,35 @@ final class MeetingRecorder {
     /// left alive: it holds the speaker embeddings that let someone who talked before
     /// the pause keep their identity after it.
     func pause() async {
-        guard state == .recording else { return }
+        guard state == .recording, transitionTask == nil else { return }
 
+        let task = Task {
+            await self.performPause()
+            self.transitionTask = nil
+        }
+        transitionTask = task
+        await task.value
+    }
+
+    private func performPause() async {
         // Disconnected before the stop is awaited, not after. The engine reads
         // `audioTap` once when a session starts, so clearing it here leaves this
         // session's own fan-out intact while making sure the next session — a
         // dictation taken during the pause — is not written into this meeting's
         // recording and fed to its diarizer, shifting every later timestamp.
         engine.audioTap = nil
-        engine.collectTimedSegments = false
 
+        // Taken before the stop is awaited, which is when capture ends; see harvestSession.
+        let sessionEndedAt = Date()
         let transcript = (try? await engine.stopRecording(owner: .meeting)) ?? engine.currentTranscript
-        harvestSession(transcript: transcript)
+        reportEngineError()
+        harvestSession(transcript: transcript, endedAt: sessionEndedAt)
+
+        // Turned off only once the session is harvested. The engine reads this flag on
+        // every final result, and the stop's finalize step is exactly when the last
+        // words before the pause become final; switched off before the stop, they
+        // reached the plain transcript and never the speaker transcript.
+        engine.collectTimedSegments = false
 
         await drainDiarizerFeed()
 
@@ -390,11 +623,24 @@ final class MeetingRecorder {
 
     /// Start capturing again, continuing the same meeting.
     func resume() async {
-        guard state == .paused else { return }
+        guard state == .paused, transitionTask == nil else { return }
 
+        let task = Task {
+            await self.performResume()
+            self.transitionTask = nil
+        }
+        transitionTask = task
+        await task.value
+    }
+
+    private func performResume() async {
         // Anchor the new session to the diarizer's clock, which counts only audio it
         // has actually received — the same quantity the transcript timestamps measure.
         sessionOffset = diarizationActive ? await diarizer.receivedSeconds : completedAudioSeconds
+
+        // Resolved before reconnecting, as in begin(): it may await the audio server,
+        // and a dictation started meanwhile must not find this meeting's tap attached.
+        let inputDeviceUID = await meetingInputDeviceUID()
 
         // Reconnected here, having been cleared on pause.
         engine.collectTimedSegments = true
@@ -404,7 +650,11 @@ final class MeetingRecorder {
             try await engine.startRecording(
                 owner: .meeting,
                 contextualStrings: settings.vocabularyHints,
-                inputDeviceUID: meetingInputDeviceUID()
+                inputDeviceUID: inputDeviceUID,
+                // Passed on every session, not only the first. Left out here, the
+                // engine skipped the band after any resume and the panel sat flat for
+                // the rest of the meeting.
+                publishesSpectrum: settings.showMeetingIndicator
             )
         } catch {
             // Put back the disconnection pause made. The meeting stays paused, and a
@@ -427,7 +677,12 @@ final class MeetingRecorder {
     }
 
     /// Move this session's results onto the meeting clock.
-    private func harvestSession(transcript: String) {
+    ///
+    /// - Parameter endedAt: When capture stopped, taken before the engine's stop was
+    ///   awaited. The stop ends capture at once and then spends up to several seconds
+    ///   finalizing; measured after it, every session counted seconds that were never
+    ///   recorded, and an unpaused meeting showed a "recorded" figure as if paused.
+    private func harvestSession(transcript: String, endedAt: Date) {
         let offset = sessionOffset
 
         collectedSegments.append(contentsOf: engine.timedSegments.map { segment in
@@ -447,14 +702,16 @@ final class MeetingRecorder {
         // recorded while paused, so this is both the length of the audio file and the
         // clock the segment offsets are placed on.
         if let sessionStartedAt {
-            completedAudioSeconds += Date().timeIntervalSince(sessionStartedAt)
+            completedAudioSeconds += endedAt.timeIntervalSince(sessionStartedAt)
         }
         sessionStartedAt = nil
 
-        // Written through on every harvest, not only at stop(). A crash or a kill that
-        // never reaches stop() then costs the current session rather than the meeting.
+        // Written through and saved on every harvest, not only at stop(). A crash or a
+        // kill during a pause then costs nothing, and one while recording costs no more
+        // than the time since the last checkpoint.
         activeMeeting?.rawTranscript = accumulatedTranscript
         activeMeeting?.recordedDuration = completedAudioSeconds
+        activeMeeting?.modelContext?.saveOrLog()
     }
 
     /// End the meeting, align speakers to text, and save.
@@ -464,6 +721,14 @@ final class MeetingRecorder {
         // meeting, or there is nothing left to stop.
         if state == .preparing {
             await startTask?.value
+        }
+
+        // Likewise a pause or resume in flight. Each ends in a settled state, recording
+        // or paused, and this stop then ends the meeting from there. Looped because
+        // another click can begin a new step in the moment between one finishing and
+        // this carrying on.
+        while let transition = transitionTask {
+            await transition.value
         }
 
         // Quitting calls this while the Stop button's save is still running. That
@@ -486,6 +751,11 @@ final class MeetingRecorder {
     }
 
     private func finish(_ meeting: Meeting, wasRecording: Bool, in context: ModelContext) async {
+        // The meeting ends now, when stop was asked for. Taken after the engine's stop
+        // and the last diarizer chunk, the end ran seconds past the audio, and an
+        // unpaused meeting's two lengths disagreed as though it had been paused.
+        let stoppedAt = Date()
+
         if wasRecording {
             AudioFeedbackService.shared.playIfEnabled(.recordingStopped, settings: settings)
 
@@ -493,18 +763,23 @@ final class MeetingRecorder {
             // pause(): this session keeps its own fan-out, and anything started
             // afterwards must not be recorded into this meeting.
             engine.audioTap = nil
-            engine.collectTimedSegments = false
 
             let transcript = (try? await engine.stopRecording(owner: .meeting)) ?? engine.currentTranscript
-            harvestSession(transcript: transcript)
+            reportEngineError()
+            harvestSession(transcript: transcript, endedAt: stoppedAt)
+
+            // After the harvest, as in pause(): the stop is what makes the last words
+            // final, and they are only collected while this is on.
+            engine.collectTimedSegments = false
         }
 
         await drainDiarizerFeed()
         let turns = diarizationActive ? await diarizer.finish() : []
 
-        meeting.endedAt = Date()
+        meeting.endedAt = stoppedAt
         meeting.recordedDuration = completedAudioSeconds
         meeting.audioFileName = audioWriter.finish()
+        reportRecordingFailure()
         meeting.rawTranscript = TextProcessor.process(
             accumulatedTranscript,
             replacements: settings.wordReplacements
@@ -576,12 +851,47 @@ final class MeetingRecorder {
 
     // MARK: - Summary
 
-    /// Generate an AI summary for a finished meeting.
-    func summarize(_ meeting: Meeting, in context: ModelContext) async throws {
-        let body = MeetingExporter.plainText(meeting)
-        guard !body.isEmpty else { return }
+    /// The built-in "Summarize" prompt.
+    ///
+    /// A meeting summary used to run whatever prompt was chosen for dictation, which is
+    /// usually a cleanup pass and handed back the transcript tidied, not summarized.
+    private static let summarizePromptId = UUID(uuidString: "00000000-0000-0000-0000-000000000002")!
 
-        let summary = try await aiProcessor.process(text: body, promptId: settings.selectedPromptId)
+    /// Generate an AI summary for a finished meeting.
+    ///
+    /// The on-device model reads only so much at once, and a transcript of more than
+    /// about a quarter of an hour used to exceed it and fail. A transcript too long for
+    /// one request is summarized in pieces that each fit, and the piece summaries are
+    /// then summarized together, as many rounds as it takes to fit in one request.
+    func summarize(_ meeting: Meeting, in context: ModelContext) async throws {
+        var text = MeetingExporter.plainText(meeting)
+        guard !text.isEmpty else { return }
+
+        let budget = Self.summaryInputBudget
+
+        while true {
+            let tokens = await Self.estimatedTokens(in: text)
+            guard tokens > budget else { break }
+
+            // Characters per token for this text, measured rather than assumed, with a
+            // tenth held back because the pieces will not all tokenize alike.
+            let charactersPerToken = Double(text.count) / Double(max(tokens, 1))
+            let pieceLimit = max(1, Int(Double(budget) * charactersPerToken * 0.9))
+
+            var summaries: [String] = []
+            for piece in Self.pieces(of: text, limit: pieceLimit) {
+                summaries.append(try await aiProcessor.process(text: piece, promptId: Self.summarizePromptId))
+                guard !meeting.isDeleted else { return }
+            }
+
+            // A round that fails to shorten the text would repeat for ever. The last
+            // request below then reports the overflow as it always has.
+            let combined = summaries.joined(separator: "\n\n")
+            guard combined.count < text.count else { break }
+            text = combined
+        }
+
+        let summary = try await aiProcessor.process(text: text, promptId: Self.summarizePromptId)
 
         // The summary takes long enough that the meeting can be deleted while it runs.
         guard !meeting.isDeleted else { return }
@@ -590,9 +900,78 @@ final class MeetingRecorder {
         context.saveOrLog()
     }
 
+    /// Tokens of transcript one summary request may carry.
+    ///
+    /// Read from the model rather than fixed: the context is 4,096 tokens on macOS 26
+    /// and larger on later systems and other devices. The request also carries the
+    /// instructions, the prompt template and the output schema, about 500 tokens held
+    /// back here, and the reply comes out of the same context. The prompt asks for a
+    /// summary a fifth to a third of the length it reads, so three fifths of what is
+    /// left goes to the transcript and two fifths to the reply.
+    private static var summaryInputBudget: Int {
+        max(256, (SystemLanguageModel.default.contextSize - 512) * 3 / 5)
+    }
+
+    /// How many tokens the model will see in `text`.
+    ///
+    /// Counted by the model where the system can do that, from macOS 26.4. Before that,
+    /// or if counting fails, estimated at three characters a token: English prose runs
+    /// nearer four, but timestamps, names and numbers tokenize worse, and an estimate
+    /// that runs high costs an extra piece where one that runs low costs the summary.
+    private static func estimatedTokens(in text: String) async -> Int {
+        if #available(macOS 26.4, iOS 26.4, *),
+           let counted = try? await SystemLanguageModel.default.tokenCount(for: text) {
+            return counted
+        }
+        return text.count / 3
+    }
+
+    /// Cut `text` into pieces of at most `limit` characters.
+    ///
+    /// Cut between utterances, which the exported transcript separates with a blank
+    /// line, so no line is split from its speaker. A single utterance longer than the
+    /// limit, or a transcript with no speakers at all, is cut between words.
+    private static func pieces(of text: String, limit: Int) -> [String] {
+        var pieces: [String] = []
+        var current = ""
+        var currentLength = 0
+
+        func add(_ part: String, length: Int, separator: String) {
+            if currentLength > 0, currentLength + separator.count + length > limit {
+                pieces.append(current)
+                current = ""
+                currentLength = 0
+            }
+            if currentLength > 0 {
+                current += separator
+                currentLength += separator.count
+            }
+            current += part
+            currentLength += length
+        }
+
+        for paragraph in text.components(separatedBy: "\n\n") {
+            let length = paragraph.count
+            if length <= limit {
+                add(paragraph, length: length, separator: "\n\n")
+            } else {
+                for (index, word) in paragraph.split(separator: " ").enumerated() {
+                    add(String(word), length: word.count, separator: index == 0 ? "\n\n" : " ")
+                }
+            }
+        }
+
+        if currentLength > 0 {
+            pieces.append(current)
+        }
+        return pieces
+    }
+
     // MARK: - Teardown
 
     private func teardown() async {
+        checkpointTask?.cancel()
+        checkpointTask = nil
         engine.audioTap = nil
         engine.collectTimedSegments = false
         await drainDiarizerFeed()
@@ -600,8 +979,10 @@ final class MeetingRecorder {
         diarizationActive = false
 
         // The tap and its aggregate outlive the app if not destroyed, so this runs on
-        // every exit path rather than only the successful one.
-        systemAudio.stop()
+        // every exit path rather than only the successful one. Off the main thread for
+        // the same reason building them is.
+        let capture = systemAudio
+        await Task.detached { capture.stop() }.value
         systemAudioActive = false
     }
 }

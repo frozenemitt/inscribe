@@ -21,7 +21,19 @@ final class AIProcessor {
 
     // MARK: - Published State
 
-    private(set) var isProcessing = false
+    /// How many AI requests are currently in flight.
+    ///
+    /// A meeting summary and a dictation both go through this processor, and each
+    /// builds its own `LanguageModelSession` — there is no shared state a second
+    /// request could corrupt, so unlike a true single-session design there is no
+    /// reason a summary running in the background should make a concurrent
+    /// dictation fail. Kept as a count rather than a flag so `isProcessing` below
+    /// still reads correctly for as long as anything at all is running.
+    private(set) var activeRequestCount = 0
+
+    /// Whether any AI request is currently running, for the UI.
+    var isProcessing: Bool { activeRequestCount > 0 }
+
     private(set) var lastError: AIProcessorError?
 
     /// A session built and loaded while the user was still speaking.
@@ -33,40 +45,16 @@ final class AIProcessor {
     ///
     /// Used once and dropped. A `LanguageModelSession` carries its own transcript, so
     /// keeping one across dictations would let the last one see the one before it.
+    /// Keyed on the instructions text as well as the prompt id: editing a prompt
+    /// keeps its id, and a session already warmed with the old wording would
+    /// otherwise run those stale instructions on the next dictation.
     private var warmSession: LanguageModelSession?
     private var warmPromptId: UUID?
+    private var warmInstructions: String?
 
     // MARK: - Configuration
 
     let promptConfiguration: PromptConfiguration
-
-    // MARK: - Available Models
-
-    /// Represents an available AI model
-    struct AIModel: Identifiable, Equatable, Hashable {
-        public let id: String
-        public let name: String
-        public let description: String
-
-        init(id: String, name: String, description: String) {
-            self.id = id
-            self.name = name
-            self.description = description
-        }
-    }
-
-    /// Available models from Apple's FoundationModels framework
-    static let availableModels: [AIModel] = [
-        AIModel(
-            id: "default",
-            name: "Default",
-            description: "Apple's default on-device language model"
-        )
-        // Additional models can be added here as Apple exposes more options
-    ]
-
-    /// The currently selected model ID
-    var selectedModelId: String = "default"
 
     // MARK: - Initialization
 
@@ -84,10 +72,13 @@ final class AIProcessor {
     /// - Parameter surroundingText: What is already in the field being dictated into.
     ///   Given to the model as background so a reply matches the thread it belongs to.
     ///   It is explicitly marked as context to be read but not rewritten.
+    /// - Parameter onPartial: Called with the rewrite so far, each time it grows, for
+    ///   a caller that shows it while the model is still writing.
     func process(
         text: String,
         promptId: UUID? = nil,
-        surroundingText: String? = nil
+        surroundingText: String? = nil,
+        onPartial: (@MainActor (String) -> Void)? = nil
     ) async throws -> String {
         // Get the prompt
         let effectivePromptId = promptId ?? PromptConfiguration.defaultPromptId
@@ -104,27 +95,9 @@ final class AIProcessor {
         return try await processWithPrompt(
             text: text,
             prompt: prompt,
-            surroundingText: surroundingText
+            surroundingText: surroundingText,
+            onPartial: onPartial
         )
-    }
-
-    /// Process text with a custom prompt (not from configuration)
-    /// - Parameters:
-    ///   - text: The transcribed text to process
-    ///   - systemPrompt: The system prompt for the AI
-    ///   - userPrompt: The user prompt template (use {text} as placeholder)
-    /// - Returns: Processed text
-    func processWithCustomPrompt(
-        text: String,
-        systemPrompt: String,
-        userPrompt: String
-    ) async throws -> String {
-        let prompt = Prompt(
-            name: "Custom",
-            systemPrompt: systemPrompt,
-            userTemplate: userPrompt
-        )
-        return try await processWithPrompt(text: text, prompt: prompt)
     }
 
     /// Quick process with a built-in action
@@ -159,12 +132,13 @@ final class AIProcessor {
     func prewarm(promptId: UUID?) {
         guard FoundationModelsHelper.isCurrentLocaleSupported() else { return }
         guard let prompt = resolvedPrompt(for: promptId) else { return }
-        guard warmPromptId != prompt.id else { return }
+        guard warmPromptId != prompt.id || warmInstructions != prompt.systemPrompt else { return }
 
         let session = FoundationModelsHelper.createSession(instructions: prompt.systemPrompt)
         session.prewarm()
         warmSession = session
         warmPromptId = prompt.id
+        warmInstructions = prompt.systemPrompt
         Log.ai.notice("prewarmed the model")
     }
 
@@ -177,10 +151,31 @@ final class AIProcessor {
         return prompt
     }
 
+    /// Warm the loaded session on the words already confirmed, while more are spoken.
+    ///
+    /// The request that follows the key release starts with exactly this text — the
+    /// same template, context and transcript, up to where the recognizer has got to —
+    /// so the model has already read most of it when the request arrives. Measured
+    /// saving: 0.2–0.3 s on a 733-character dictation with four fifths of it warmed.
+    /// Writing the answer is the rest of the wait, and nothing here shortens it.
+    ///
+    /// Does nothing when no session was warmed at the start, or when it was warmed for
+    /// a different prompt.
+    func warmPrefix(promptId: UUID?, transcriptSoFar: String, surroundingText: String?) {
+        guard let warmSession, let prompt = resolvedPrompt(for: promptId),
+              warmPromptId == prompt.id, warmInstructions == prompt.systemPrompt else { return }
+
+        let full = Self.userPrompt(for: prompt, text: transcriptSoFar, surroundingText: surroundingText)
+        let closing = "\n</transcription>"
+        let prefix = full.hasSuffix(closing) ? String(full.dropLast(closing.count)) : full
+        warmSession.prewarm(promptPrefix: FoundationModels.Prompt(prefix))
+    }
+
     /// Forget a warmed session that will not be used.
     func discardPrewarm() {
         warmSession = nil
         warmPromptId = nil
+        warmInstructions = nil
     }
 
     // MARK: - Private Implementation
@@ -188,14 +183,11 @@ final class AIProcessor {
     private func processWithPrompt(
         text: String,
         prompt: Prompt,
-        surroundingText: String? = nil
+        surroundingText: String? = nil,
+        onPartial: (@MainActor (String) -> Void)? = nil
     ) async throws -> String {
         guard !text.isEmpty else {
             throw AIProcessorError.emptyInput
-        }
-
-        guard !isProcessing else {
-            throw AIProcessorError.alreadyProcessing
         }
 
         // Check language support
@@ -203,65 +195,64 @@ final class AIProcessor {
             throw AIProcessorError.languageNotSupported
         }
 
-        isProcessing = true
+        // Fail with a clear reason before spending any time on a session that can
+        // never answer, rather than letting the request reach the model and come
+        // back with whatever generic error the SDK happens to throw.
+        if let reason = FoundationModelsHelper.unavailabilityReason() {
+            throw AIProcessorError.appleIntelligenceUnavailable(reason)
+        }
+
+        activeRequestCount += 1
         lastError = nil
 
         defer {
-            isProcessing = false
+            activeRequestCount -= 1
         }
 
         Log.ai.notice("Processing with prompt: \(prompt.name)")
 
+        // The session warmed while this was being spoken, if it was warmed for this
+        // prompt with its current instructions. Taken rather than borrowed: a
+        // session carries its own transcript, so the next dictation gets a fresh one.
+        let session: LanguageModelSession
+        if let warmSession, warmPromptId == prompt.id, warmInstructions == prompt.systemPrompt {
+            session = warmSession
+        } else {
+            session = FoundationModelsHelper.createSession(instructions: prompt.systemPrompt)
+        }
+        discardPrewarm()
+
+        let userPrompt = Self.userPrompt(for: prompt, text: text, surroundingText: surroundingText)
+
+        // Use per-prompt generation settings with structured output
+        let options = prompt.generationOptions()
+
         do {
-            // The session warmed while this was being spoken, if it was warmed for
-            // this prompt. Taken rather than borrowed: a session carries its own
-            // transcript, so the next dictation gets a fresh one.
-            let session: LanguageModelSession
-            if let warmSession, warmPromptId == prompt.id {
-                session = warmSession
+            let result: TranscriptionResult
+            if let onPartial {
+                let started = ContinuousClock.now
+                var reportedFirst = false
+                result = try await FoundationModelsHelper.streamTranscription(
+                    session: session,
+                    prompt: userPrompt,
+                    options: options
+                ) { partial in
+                    if !reportedFirst {
+                        reportedFirst = true
+                        let ms = Int((ContinuousClock.now - started) / .milliseconds(1))
+                        Log.ai.notice("First rewritten words after \(ms, privacy: .public) ms")
+                    }
+                    onPartial(partial)
+                }
             } else {
-                session = FoundationModelsHelper.createSession(instructions: prompt.systemPrompt)
+                result = try await FoundationModelsHelper.generateStructured(
+                    session: session,
+                    prompt: userPrompt,
+                    generating: TranscriptionResult.self,
+                    options: options
+                )
             }
-            discardPrewarm()
-
-            // Apply the user template to the text
-            var userPrompt = prompt.apply(to: text)
-
-            // Prepended, and fenced off in its own tags, so the model treats it as
-            // background rather than as more text to rewrite. Without the fencing the
-            // model tends to "clean up" the surrounding document too and hand it back.
-            if let surroundingText, !surroundingText.isEmpty {
-                userPrompt = """
-                    <context>
-                    The user is dictating into a text field that already contains the \
-                    following. Use it only to match tone, terminology and the thread of \
-                    the conversation. Do not repeat it, summarise it, or include any of \
-                    it in your reply.
-
-                    \(surroundingText)
-                    </context>
-
-                    \(userPrompt)
-                    """
-            }
-
-            // Use per-prompt generation settings with structured output
-            let options = prompt.generationOptions()
-            let result = try await FoundationModelsHelper.generateStructured(
-                session: session,
-                prompt: userPrompt,
-                generating: TranscriptionResult.self,
-                options: options
-            )
-
-            // Strip leaked <transcription> tags if the model echoes them back
-            let cleaned = result.text
-                .replacingOccurrences(of: "<transcription>", with: "")
-                .replacingOccurrences(of: "</transcription>", with: "")
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-
-            Log.ai.notice("Processing complete, result length: \(cleaned.count, privacy: .public)")
-            return cleaned
+            return try cleaned(result.text)
 
         } catch FoundationModelsError.contextWindowExceeded {
             lastError = .contextWindowExceeded
@@ -270,19 +261,85 @@ final class AIProcessor {
             lastError = .languageNotSupported
             throw AIProcessorError.languageNotSupported
         } catch FoundationModelsError.guardrailViolation {
-            lastError = .guardrailViolation
-            throw AIProcessorError.guardrailViolation
+            // Guided generation doesn't benefit from the permissive guardrail level
+            // (see the comment on `permissiveModel`), so before giving up, ask once
+            // more for plain text, which does.
+            do {
+                let retried = try await FoundationModelsHelper.generateTextAfterGuardrailViolation(
+                    instructions: prompt.systemPrompt,
+                    prompt: userPrompt,
+                    options: options
+                )
+                let result = try cleaned(retried)
+                Log.ai.notice("Recovered from a guardrail violation by asking for plain text")
+                return result
+            } catch {
+                lastError = .guardrailViolation
+                throw AIProcessorError.guardrailViolation
+            }
+        } catch let error as AIProcessorError {
+            lastError = .processingFailed(error.localizedDescription)
+            throw error
         } catch {
             lastError = .processingFailed(error.localizedDescription)
             throw AIProcessorError.processingFailed(error.localizedDescription)
         }
     }
 
+    /// Strip tags the model sometimes echoes back, and fail loudly on an empty
+    /// result rather than handing the caller nothing to paste. The raw transcript
+    /// exists nowhere else once this returns, so silence here would lose the
+    /// dictation outright rather than merely skip the rewrite.
+    /// The request the model receives: the template, the transcript, and any
+    /// surrounding text.
+    ///
+    /// One function for the real request and for warming, so the warmed prefix is the
+    /// request's own opening, character for character. Any difference and the warming
+    /// buys nothing.
+    private static func userPrompt(for prompt: Prompt, text: String, surroundingText: String?) -> String {
+        let request = prompt.apply(to: text)
+
+        // Prepended, and fenced off in its own tags, so the model treats it as
+        // background rather than as more text to rewrite. Without the fencing the
+        // model tends to "clean up" the surrounding document too and hand it back.
+        guard let surroundingText, !surroundingText.isEmpty else { return request }
+        return """
+            <context>
+            The user is dictating into a text field that already contains the \
+            following. Use it only to match tone, terminology and the thread of \
+            the conversation. Do not repeat it, summarise it, or include any of \
+            it in your reply.
+
+            \(surroundingText)
+            </context>
+
+            \(request)
+            """
+    }
+
+    private func cleaned(_ text: String) throws -> String {
+        let cleaned = text
+            .replacingOccurrences(of: "<transcription>", with: "")
+            .replacingOccurrences(of: "</transcription>", with: "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+
+        guard !cleaned.isEmpty else {
+            throw AIProcessorError.emptyResult
+        }
+
+        Log.ai.notice("Processing complete, result length: \(cleaned.count, privacy: .public)")
+        return cleaned
+    }
+
     // MARK: - Model Information
 
-    /// Check if AI processing is available on this device
-    static var isAvailable: Bool {
-        FoundationModelsHelper.isCurrentLocaleSupported()
+    /// Why Apple Intelligence cannot answer right now, or nil when it can.
+    ///
+    /// For Settings, so a user who has switched AI processing on but never turned
+    /// on Apple Intelligence — or whose Mac cannot run it at all — sees why, rather
+    /// than discovering it as a mysterious failure the first time they dictate.
+    static var unavailabilityReason: String? {
+        FoundationModelsHelper.unavailabilityReason()
     }
 
     /// Get supported languages
@@ -334,8 +391,9 @@ extension AIProcessor {
 enum AIProcessorError: Error, LocalizedError {
     case promptNotFound
     case emptyInput
-    case alreadyProcessing
+    case emptyResult
     case languageNotSupported
+    case appleIntelligenceUnavailable(String)
     case contextWindowExceeded
     case guardrailViolation
     case processingFailed(String)
@@ -346,10 +404,12 @@ enum AIProcessorError: Error, LocalizedError {
             return "The selected prompt could not be found"
         case .emptyInput:
             return "No text to process"
-        case .alreadyProcessing:
-            return "Already processing a request"
+        case .emptyResult:
+            return "The AI returned no text, so nothing was changed."
         case .languageNotSupported:
             return "The current language is not supported for AI processing"
+        case .appleIntelligenceUnavailable(let reason):
+            return reason
         case .contextWindowExceeded:
             return "The text is too long to process"
         case .guardrailViolation:

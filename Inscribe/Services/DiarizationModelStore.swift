@@ -81,10 +81,41 @@ enum DiarizationModelStore {
 
     // MARK: - Local State
 
+    /// Whether both models are on disk whole, ready to load.
+    ///
+    /// Checking that the two folders exist was not enough. An install interrupted part
+    /// way leaves them without their `coremldata.bin`, or with a weight file still named
+    /// `.partial`; Settings said Installed, and the next meeting start found the models
+    /// incomplete and went to HuggingFace for them. This is FluidAudio's own test for a
+    /// complete model.
     static var isInstalled: Bool {
-        requiredFiles.allSatisfy {
-            FileManager.default.fileExists(atPath: modelsDirectory.appendingPathComponent($0).path)
+        requiredFiles.allSatisfy { name in
+            let model = modelsDirectory.appendingPathComponent(name)
+            return FileManager.default.fileExists(atPath: model.appendingPathComponent("coremldata.bin").path)
+                && !containsPartialDownload(model)
         }
+    }
+
+    /// Whether a download into `folder` was cut off and left a `.partial` file behind.
+    private static func containsPartialDownload(_ folder: URL) -> Bool {
+        guard let enumerator = FileManager.default.enumerator(
+            at: folder,
+            includingPropertiesForKeys: nil
+        ) else { return false }
+
+        for case let file as URL in enumerator where file.pathExtension == "partial" {
+            return true
+        }
+        return false
+    }
+
+    /// Keep FluidAudio off the network.
+    ///
+    /// Left to itself, FluidAudio deletes and re-downloads any model it finds incomplete
+    /// or cannot load, wherever it is called from. Set once at launch; `install()` lifts
+    /// it for its own download and puts it back.
+    static func stayOffline() {
+        ModelHub.offlineMode = true
     }
 
     /// When the models landed on disk.
@@ -113,7 +144,13 @@ enum DiarizationModelStore {
     ///
     /// Deliberately not called from the recording path: starting a meeting must not
     /// reach the network. Settings is the only caller, behind a button.
+    ///
+    /// The one place FluidAudio is let online. An incomplete install is repaired here
+    /// too: FluidAudio finds the broken model, deletes it and downloads it again.
     static func install() async throws {
+        ModelHub.offlineMode = false
+        defer { ModelHub.offlineMode = true }
+
         _ = try await DiarizerModels.downloadIfNeeded()
 
         // FluidAudio keeps no record of which revision it took, so "check for updates"
@@ -304,14 +341,40 @@ enum DiarizationModelStore {
 
     // MARK: - Mutation
 
-    /// Delete the local copies so the next meeting downloads them fresh.
+    /// Replace the local copies with fresh ones from HuggingFace.
     ///
     /// Removal rather than in-place replacement: FluidAudio skips any file already on
     /// disk, so a stale copy would survive a re-download.
-    static func removeLocalCopies() throws {
-        guard FileManager.default.fileExists(atPath: modelsDirectory.path) else { return }
-        try FileManager.default.removeItem(at: modelsDirectory)
+    ///
+    /// This used to stop at the removal and leave the download to the next meeting.
+    /// A meeting is not allowed to download, so that meeting recorded without speakers
+    /// and Settings offered only Install. The download now follows at once. The old
+    /// copies are moved aside rather than deleted until the new ones are in, so a
+    /// failed download puts them back instead of leaving no models at all.
+    static func reinstall() async throws {
+        let fileManager = FileManager.default
+        let previous = modelsRoot.appendingPathComponent("\(folderName).previous", isDirectory: true)
+        let previousRevision = installedRevision
+
+        try? fileManager.removeItem(at: previous)
+        if fileManager.fileExists(atPath: modelsDirectory.path) {
+            try fileManager.moveItem(at: modelsDirectory, to: previous)
+        }
         UserDefaults.standard.removeObject(forKey: installedRevisionKey)
+
+        do {
+            try await install()
+            try? fileManager.removeItem(at: previous)
+        } catch {
+            try? fileManager.removeItem(at: modelsDirectory)
+            if fileManager.fileExists(atPath: previous.path) {
+                try? fileManager.moveItem(at: previous, to: modelsDirectory)
+                if let previousRevision {
+                    recordInstalledRevision(previousRevision)
+                }
+            }
+            throw error
+        }
     }
 
     // MARK: - Unused Models

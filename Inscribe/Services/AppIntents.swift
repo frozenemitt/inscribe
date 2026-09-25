@@ -21,15 +21,17 @@ struct QuickTranscribeIntent: AppIntent {
     @Parameter(title: "Duration", description: "Recording duration in seconds (5-120)", default: 15)
     var duration: Int
 
+    /// Picked from the list rather than typed. A typed name had to match exactly, and
+    /// a typo silently skipped the AI pass.
     @Parameter(title: "AI Prompt", description: "Optional AI processing prompt")
-    var promptName: String?
+    var prompt: PromptEntity?
 
     @Parameter(title: "Copy to Clipboard", default: true)
     var copyToClipboard: Bool
 
     static var parameterSummary: some ParameterSummary {
         Summary("Transcribe for \(\.$duration) seconds") {
-            \.$promptName
+            \.$prompt
             \.$copyToClipboard
         }
     }
@@ -46,8 +48,27 @@ struct QuickTranscribeIntent: AppIntent {
         // Load settings for feedback preferences
         let settings = AppSettings()
 
+        // Whether this run's own recording started. Only that one may be cancelled on
+        // the way out: a start refused as busy belongs to someone else's session, and
+        // cancelling it threw away a dictation the user was in the middle of.
+        var started = false
+
         do {
-            // Play start sound and haptic
+            // The same microphone, vocabulary and text rules the hotkey uses. A
+            // shortcut that transcribed differently from the menu bar was the same
+            // app answering the same question two ways.
+            //
+            // Recorded as a shortcut, not as a dictation, so the hotkey, Escape and the
+            // menu bar leave it alone.
+            try await engine.startRecording(
+                owner: .shortcut,
+                contextualStrings: settings.vocabularyHints,
+                inputDeviceUID: settings.inputDeviceUID
+            )
+            started = true
+
+            // Sounded once capture is live, as the hotkey does, so a refused start is
+            // not announced as a recording.
             AudioFeedbackService.shared.playIfEnabled(.recordingStarted, settings: settings)
             #if os(iOS)
             AudioFeedbackService.shared.playStartHaptic()
@@ -55,14 +76,6 @@ struct QuickTranscribeIntent: AppIntent {
             // Start Live Activity
             await LiveActivityManager.shared.startRecordingActivity()
             #endif
-
-            // The same microphone, vocabulary and text rules the hotkey uses. A
-            // shortcut that transcribed differently from the menu bar was the same
-            // app answering the same question two ways.
-            try await engine.startRecording(
-                contextualStrings: settings.vocabularyHints,
-                inputDeviceUID: settings.inputDeviceUID
-            )
 
             // Record for specified duration
             try await Task.sleep(nanoseconds: UInt64(recordingDuration) * 1_000_000_000)
@@ -78,7 +91,7 @@ struct QuickTranscribeIntent: AppIntent {
 
             // Stop and get transcription
             let transcription = TextProcessor.process(
-                try await engine.stopRecording(),
+                try await engine.stopRecording(owner: .shortcut),
                 replacements: settings.wordReplacements
             )
 
@@ -95,25 +108,26 @@ struct QuickTranscribeIntent: AppIntent {
             // Apply AI processing if requested, falling back to raw transcript on failure
             var finalText = transcription
             var aiFailureReason: String?
-            if let promptName = promptName, !promptName.isEmpty {
+            var appliedPrompt: String?
+            if let prompt {
                 let promptConfig = PromptConfiguration()
                 let aiProcessor = AIProcessor(promptConfiguration: promptConfig)
 
-                // Find prompt by name
-                if let prompt = promptConfig.prompts.first(where: { $0.name.lowercased() == promptName.lowercased() }) {
+                if promptConfig.prompt(withId: prompt.id) != nil {
                     do {
                         finalText = try await aiProcessor.process(text: transcription, promptId: prompt.id)
+                        appliedPrompt = prompt.name
                     } catch {
                         Log.intents.error("AI processing failed, using raw transcript: \(error, privacy: .public)")
                         finalText = transcription
                         aiFailureReason = "AI processing failed."
                     }
                 } else {
-                    // A name matching no prompt is a typo in the shortcut. Reported
-                    // rather than thrown: the recording is already spent, and the
-                    // transcript is still worth handing back.
-                    Log.intents.error("No prompt named '\(promptName)'")
-                    aiFailureReason = "No prompt is named \"\(promptName)\"."
+                    // A prompt deleted since the shortcut was made. Reported rather than
+                    // thrown: the recording is already spent, and the transcript is
+                    // still worth handing back.
+                    Log.intents.error("The shortcut's prompt no longer exists")
+                    aiFailureReason = "The prompt \"\(prompt.name)\" no longer exists."
                 }
             }
 
@@ -122,7 +136,7 @@ struct QuickTranscribeIntent: AppIntent {
                 ClipboardService.copy(finalText)
             }
 
-            recordHistory(finalText, raw: transcription, promptName: promptName, settings: settings)
+            recordHistory(finalText, raw: transcription, promptName: appliedPrompt, settings: settings)
 
             // End Live Activity and show notification
             #if os(iOS)
@@ -165,7 +179,9 @@ struct QuickTranscribeIntent: AppIntent {
             // its time limit, throws out of the sleep above. Without this the
             // microphone stays live with nothing watching it — no watchdog was armed,
             // because the coordinator was never part of this.
-            engine.cancelRecording()
+            if started {
+                engine.cancelRecording(owner: .shortcut)
+            }
 
             #if os(iOS)
             await LiveActivityManager.shared.endActivity()
@@ -218,15 +234,22 @@ struct RecordTranscriptionIntent: AppIntent {
         // app is already doing, because the guard that refuses that is instance state.
         let engine = TranscriptionEngine.shared
         let settings = AppSettings()
+        var started = false
 
         do {
             try await engine.startRecording(
+                owner: .shortcut,
                 contextualStrings: settings.vocabularyHints,
                 inputDeviceUID: settings.inputDeviceUID
             )
+            started = true
+            // The same sounds the hotkey and the other action make. This one used to
+            // record in silence, with nothing to say when to start talking.
+            AudioFeedbackService.shared.playIfEnabled(.recordingStarted, settings: settings)
             try await Task.sleep(nanoseconds: UInt64(recordingDuration) * 1_000_000_000)
+            AudioFeedbackService.shared.playIfEnabled(.recordingStopped, settings: settings)
             let transcription = TextProcessor.process(
-                try await engine.stopRecording(),
+                try await engine.stopRecording(owner: .shortcut),
                 replacements: settings.wordReplacements
             )
 
@@ -237,14 +260,19 @@ struct RecordTranscriptionIntent: AppIntent {
             var finalText = transcription
             var dialogPrefix = "Transcription"
             var aiProcessingFailed = false
+            var appliedAction: String?
 
-            if processWithAI, let action = aiAction {
+            // "Process with AI" with no action picked used to skip the AI pass without
+            // a word. It runs the default clean-up instead.
+            if processWithAI {
+                let action = aiAction ?? .cleanup
                 let promptConfig = PromptConfiguration()
                 let aiProcessor = AIProcessor(promptConfiguration: promptConfig)
 
                 do {
                     finalText = try await aiProcessor.quickProcess(text: transcription, action: action.toQuickAction)
                     dialogPrefix = action.rawValue
+                    if action != .raw { appliedAction = action.rawValue }
                 } catch {
                     Log.intents.error("AI processing failed, using raw transcript: \(error, privacy: .public)")
                     finalText = transcription
@@ -259,7 +287,7 @@ struct RecordTranscriptionIntent: AppIntent {
             recordHistory(
                 finalText,
                 raw: transcription,
-                promptName: aiAction?.rawValue,
+                promptName: appliedAction,
                 settings: settings
             )
 
@@ -277,8 +305,11 @@ struct RecordTranscriptionIntent: AppIntent {
 
         } catch {
             // Same reason as the other intent: a cancelled run must not leave the
-            // microphone recording.
-            engine.cancelRecording()
+            // microphone recording, and must not cancel a session that is not its own.
+            if started {
+                engine.cancelRecording(owner: .shortcut)
+            }
+            AudioFeedbackService.shared.playIfEnabled(.error, settings: settings)
             throw error
         }
     }

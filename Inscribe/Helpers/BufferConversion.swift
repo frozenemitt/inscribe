@@ -18,9 +18,13 @@ class BufferConverter {
             return buffer
         }
 
-        if converter == nil || converter?.outputFormat != format {
+        if converter == nil || converter?.outputFormat != format || converter?.inputFormat != inputFormat {
             converter = AVAudioConverter(from: inputFormat, to: format)
             converter?.primeMethod = .none  // Sacrifice quality of first samples in order to avoid any timestamp drift from source
+            // Mix every channel in. Without this, reducing the channel count keeps only
+            // the first channel, so a microphone on input 2 of an interface, or the
+            // system audio mixed into a meeting's device, is never heard.
+            converter?.downmix = true
         }
 
         guard let converter else {

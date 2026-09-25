@@ -88,6 +88,40 @@ final class RecordingCoordinator {
     var isRecording: Bool { engine.owner == .dictation && engine.isRecording }
     var isProcessing: Bool { aiProcessor.isProcessing }
 
+    /// True from the moment a dictation starts coming up until it stops recording.
+    ///
+    /// What Escape should cancel. `isRecording` is false for the 70–470 ms the engine
+    /// takes to start, and an Escape pressed then went to the app instead.
+    var isCancellable: Bool {
+        engine.owner == .dictation && (engine.phase == .starting || engine.phase == .recording)
+    }
+
+    /// The most recent app other than Inscribe to come to the front.
+    ///
+    /// A dictation started from the menu bar can find Inscribe itself frontmost, and
+    /// the text belongs to the app the user was in before they clicked.
+    #if os(macOS)
+    @ObservationIgnored private var lastExternalApp: NSRunningApplication?
+    @ObservationIgnored private var activationObserver: (any NSObjectProtocol)?
+    #endif
+    @ObservationIgnored private var interruptionObserver: (any NSObjectProtocol)?
+
+    /// What the target field held when the dictation began, for the AI pass.
+    ///
+    /// Read at the start rather than at delivery: the request warmed while the user
+    /// speaks has to open with the same text as the request sent at release, and the
+    /// field has not changed in between, since nothing is pasted until the end.
+    @ObservationIgnored private var surroundingText: String?
+
+    /// Warms the AI session on the words confirmed so far, while recording.
+    @ObservationIgnored private var prefixWarmer: Task<Void, Never>?
+
+    /// Longest the AI pass may take before the raw transcript is delivered instead.
+    ///
+    /// Until the text lands, every press is refused as "still delivering", so a model
+    /// that never answers would otherwise hold the hotkey until relaunch.
+    private static let aiDeadline: Double = 20
+
     // MARK: - Initialization
 
     init(engine: TranscriptionEngine, aiProcessor: AIProcessor, settings: AppSettings) {
@@ -96,7 +130,31 @@ final class RecordingCoordinator {
         self.settings = settings
         #if os(macOS)
         self.overlay = DictationOverlayController(settings: settings)
+        lastExternalApp = NSWorkspace.shared.frontmostApplication
+        activationObserver = NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.didActivateApplicationNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] note in
+            guard let app = note.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication,
+                  app.processIdentifier != ProcessInfo.processInfo.processIdentifier else { return }
+            MainActor.assumeIsolated { self?.lastExternalApp = app }
+        }
         #endif
+
+        // A microphone that changes mid-dictation ends the capture. Deliver what was
+        // heard up to that point rather than leave the key recording silence.
+        interruptionObserver = NotificationCenter.default.addObserver(
+            forName: TranscriptionEngine.captureInterruptedNotification,
+            object: engine,
+            queue: .main
+        ) { [weak self] note in
+            guard (note.userInfo?["owner"] as? TranscriptionEngine.SessionOwner) == .dictation else { return }
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                Task { await self.stopAndProcess() }
+            }
+        }
     }
 
     #if os(macOS)
@@ -147,6 +205,10 @@ final class RecordingCoordinator {
     }
 
     func start() async {
+        // One start at a time. A press, release and press queued behind a busy main
+        // thread used to run two starts together, and the second tore down the first.
+        guard startTask == nil else { return }
+
         // Let the previous dictation hand the engine back before claiming it. Without
         // this the new session cleared the old one's transcript out from under it and
         // both sets of words were lost.
@@ -159,9 +221,17 @@ final class RecordingCoordinator {
         }
 
         // Refuse to start over anyone's session, including a meeting's, and including
-        // one that is still coming up.
-        guard !engine.isBusy else { return }
+        // one that is still coming up. Said out loud: a silent refusal has the user
+        // talking into nothing.
+        guard !engine.isBusy else {
+            Log.dictation.notice("Engine busy with \(self.engine.owner?.rawValue ?? "another session", privacy: .public), not starting")
+            AudioFeedbackService.shared.playIfEnabled(.error, settings: settings)
+            return
+        }
 
+        // Checked again after the awaits above: another start may have claimed the
+        // slot while this one waited.
+        guard startTask == nil else { return }
         let task = Task { await self.begin() }
         startTask = task
         await task.value
@@ -172,17 +242,17 @@ final class RecordingCoordinator {
 
         #if os(macOS)
         // Captured before we touch anything, so a menu bar click that steals focus
-        // does not redirect the text to Inscribe itself.
-        targetApp = NSWorkspace.shared.frontmostApplication
+        // does not redirect the text to Inscribe itself. When Inscribe is already in
+        // front, the text belongs to the app the user was in before it.
+        let frontmost = NSWorkspace.shared.frontmostApplication
+        targetApp = frontmost?.processIdentifier == ProcessInfo.processInfo.processIdentifier
+            ? lastExternalApp
+            : frontmost
         activeProfile = settings.profile(forBundleIdentifier: targetApp?.bundleIdentifier)
 
         if let activeProfile {
             Log.dictation.notice("Using profile for \(activeProfile.appName, privacy: .public)")
         }
-
-        // Chromium-based apps need to be told to build an accessibility tree, and it
-        // takes them a moment. Asking now means it is ready by the time we deliver.
-        TextInsertionService.prepareForInsertion(into: targetApp)
         #endif
 
         do {
@@ -199,11 +269,25 @@ final class RecordingCoordinator {
             return
         }
 
+        #if os(macOS)
+        // Chromium-based apps need to be told to build an accessibility tree, and it
+        // takes them a moment. Asked once the microphone is open, not before: the call
+        // waits on the target app, and a busy app made the user's first words wait too.
+        TextInsertionService.prepareForInsertion(into: targetApp)
+        #endif
+
         // Load the model while the user is still speaking. It has to be in memory
         // before it can answer, and that load used to begin only once they had
         // finished — seconds of waiting bolted onto seconds of talking.
+        surroundingText = nil
         if settings.aiEnabled, !skipAIOnce {
             aiProcessor.prewarm(promptId: effectivePromptId)
+            #if os(macOS)
+            if settings.useSurroundingContext {
+                surroundingText = TextInsertionService.focusedFieldContext(in: targetApp)
+            }
+            #endif
+            startPrefixWarmer()
         }
 
         // Sounded only once capture is live, so the user does not talk over the gap.
@@ -225,9 +309,17 @@ final class RecordingCoordinator {
         // rather than being dropped and leaving the microphone running.
         if let startTask { await startTask.value }
 
-        guard isRecording else { return }
+        // Claimed in the same step as the check. Two releases waiting on one start
+        // both used to pass `isRecording`, and the second stopped a session the first
+        // was already delivering, then cleared the flag while the first still was.
+        guard isRecording, !isDelivering else { return }
+        isDelivering = true
+        defer { isDelivering = false }
+
         maxDurationTask?.cancel()
         maxDurationTask = nil
+        prefixWarmer?.cancel()
+        prefixWarmer = nil
 
         AudioFeedbackService.shared.playIfEnabled(.recordingStopped, settings: settings)
 
@@ -240,17 +332,36 @@ final class RecordingCoordinator {
         }
         #endif
 
-        isDelivering = true
-        defer { isDelivering = false }
-
-        let rawTranscript: String
-        let stop = Task { try await engine.stopRecording(owner: .dictation) }
+        // Spoken punctuation and word replacements run before the AI pass, so a
+        // corrected term reaches the model already spelled the way the user wants
+        // rather than being "corrected" back.
+        //
+        // Done inside the stop task, and an empty result gives up the delivering flag
+        // there too. A press waiting on this task then finds the way clear, instead of
+        // being refused as "still delivering" by a dictation with nothing to deliver.
+        let replacements = settings.wordReplacements
+        let stop = Task { [engine] () throws -> String in
+            do {
+                let raw = try await engine.stopRecording(owner: .dictation)
+                let processed = TextProcessor.process(raw, replacements: replacements)
+                if processed.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    self.isDelivering = false
+                }
+                return processed
+            } catch {
+                self.isDelivering = false
+                throw error
+            }
+        }
         stopTask = stop
+
+        let transcript: String
         do {
-            rawTranscript = try await stop.value
+            transcript = try await stop.value
             stopTask = nil
         } catch {
             stopTask = nil
+            aiProcessor.discardPrewarm()
             #if os(macOS)
             overlay.hide()
             #endif
@@ -260,19 +371,14 @@ final class RecordingCoordinator {
             return
         }
 
-        // Spoken punctuation and word replacements run before the AI pass, so a
-        // corrected term reaches the model already spelled the way the user wants
-        // rather than being "corrected" back.
-        let transcript = TextProcessor.process(
-            rawTranscript,
-            replacements: settings.wordReplacements
-        )
-
         guard !transcript.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             #if os(macOS)
             overlay.hide()
             #endif
             skipAIOnce = false
+            // A session loaded for this dictation's prompt would otherwise be picked up
+            // by the next one, with the instructions it held when it was loaded.
+            aiProcessor.discardPrewarm()
 
             // A recognizer that failed and a room that was quiet used to look exactly
             // the same from outside: both ended in silence with no text. Say which.
@@ -294,12 +400,31 @@ final class RecordingCoordinator {
             return
         }
 
+        // Kept before anything else can fail or the app can quit: from here on the
+        // words survive a hung AI pass, a paste into the wrong window, or a quit
+        // mid-delivery. The entry is brought up to date once the text has landed.
+        let entry = recordHistory(transcript)
+
+        // A recognizer that failed part-way, or a microphone that changed, still hands
+        // back what it had. Delivered, and said: passing it off as complete hides that
+        // the end is missing.
+        if let engineError = engine.error {
+            NotificationService.shared.showErrorIfEnabled(
+                "\(engineError.localizedDescription) Everything heard before that was delivered.",
+                settings: settings
+            )
+            Log.dictation.error("Delivering a transcript cut short: \(engineError, privacy: .public)")
+        }
+
         let shouldUseAI = settings.aiEnabled && !skipAIOnce
         skipAIOnce = false
 
         guard shouldUseAI else {
+            // Loaded at the start if AI was on then; "Skip AI" pressed mid-recording
+            // leaves it unused.
+            aiProcessor.discardPrewarm()
             await deliver(transcript)
-            recordHistory(text: transcript, rawText: nil)
+            finishHistory(entry, text: transcript, rawText: nil, promptName: nil)
             AudioFeedbackService.shared.playIfEnabled(.processingComplete, settings: settings)
             NotificationService.shared.showTranscriptionCompleteIfEnabled(
                 characterCount: transcript.count,
@@ -309,44 +434,63 @@ final class RecordingCoordinator {
             return
         }
 
-        // Read now rather than at delivery, and asked of the app the dictation was aimed
-        // at: by the time the model answers the user may be looking at something else,
-        // and the field we want is the one they were dictating into.
-        var surroundingText: String?
+        // Normally read when the dictation began. Asked again now only if that found
+        // nothing — a Chromium app can take a moment to expose its fields — and asked
+        // of the app the dictation was aimed at, not whatever the user looks at now.
+        var surroundingText = self.surroundingText
         #if os(macOS)
-        if settings.useSurroundingContext {
+        if surroundingText == nil, settings.useSurroundingContext {
             surroundingText = TextInsertionService.focusedFieldContext(in: targetApp)
+        }
+        #endif
+        // The rewrite is shown in the panel as it is written.
+        var onPartial: (@MainActor (String) -> Void)?
+        #if os(macOS)
+        if settings.showDictationOverlay {
+            let overlay = self.overlay
+            onPartial = { @MainActor text in overlay.showRewrite(text) }
         }
         #endif
 
         AudioFeedbackService.shared.startProcessingLoopIfEnabled(settings: settings)
 
+        let promptId = effectivePromptId
         let finalText: String
         do {
-            finalText = try await aiProcessor.process(
-                text: transcript,
-                promptId: effectivePromptId,
-                surroundingText: surroundingText
-            )
+            let context = surroundingText
+            finalText = try await withDeadline(seconds: Self.aiDeadline) { [aiProcessor, onPartial] in
+                try await aiProcessor.process(
+                    text: transcript,
+                    promptId: promptId,
+                    surroundingText: context,
+                    onPartial: onPartial
+                )
+            }
             AudioFeedbackService.shared.stopProcessingLoop()
         } catch {
-            // A failed AI pass must not cost the user their words.
+            // A failed AI pass must not cost the user their words, and neither may a
+            // model that never answers: past the deadline the raw transcript goes out.
             AudioFeedbackService.shared.stopProcessingLoop()
-            Log.dictation.error("AI failed, delivering raw transcript: \(error, privacy: .public)")
+            let detail = error is DeadlineExceeded
+                ? "The AI pass took longer than \(Int(Self.aiDeadline)) seconds."
+                : error.localizedDescription
+            Log.dictation.error("AI failed, delivering raw transcript: \(detail, privacy: .public)")
 
             await deliver(transcript)
-            recordHistory(text: transcript, rawText: nil)
+            finishHistory(entry, text: transcript, rawText: nil, promptName: nil)
             AudioFeedbackService.shared.playIfEnabled(.processingComplete, settings: settings)
             NotificationService.shared.showAIProcessingFailedIfEnabled(
                 characterCount: transcript.count,
-                errorDetail: error.localizedDescription,
+                errorDetail: detail,
                 settings: settings
             )
             return
         }
 
         await deliver(finalText)
-        recordHistory(text: finalText, rawText: transcript)
+        let promptName = aiProcessor.promptConfiguration
+            .prompt(withId: promptId ?? PromptConfiguration.defaultPromptId)?.name
+        finishHistory(entry, text: finalText, rawText: transcript, promptName: promptName)
         AudioFeedbackService.shared.playIfEnabled(.processingComplete, settings: settings)
         NotificationService.shared.showTranscriptionCompleteIfEnabled(
             characterCount: finalText.count,
@@ -355,28 +499,41 @@ final class RecordingCoordinator {
         )
     }
 
-    /// Keep the finished dictation, so it survives landing in the wrong window.
-    private func recordHistory(text: String, rawText: String?) {
-        guard let modelContext else { return }
-
-        let promptName = effectivePromptId.flatMap { id in
-            aiProcessor.promptConfiguration.prompt(withId: id)?.name
-        }
-
-        DictationHistory.record(
-            text: text,
-            rawText: rawText,
-            destination: lastDestination,
-            promptName: promptName,
+    /// Keep the dictation the moment its words exist.
+    private func recordHistory(_ transcript: String) -> Dictation? {
+        guard let modelContext else { return nil }
+        return DictationHistory.record(
+            text: transcript,
+            rawText: nil,
+            destination: nil,
+            promptName: nil,
             settings: settings,
             in: modelContext
         )
     }
 
+    /// Bring the kept entry up to date with what was actually delivered.
+    ///
+    /// The prompt is named only when its output is what landed. A raw transcript
+    /// delivered after the AI pass failed used to carry the prompt's name, and the
+    /// default prompt's output carried none.
+    private func finishHistory(_ entry: Dictation?, text: String, rawText: String?, promptName: String?) {
+        guard let entry, let modelContext, !entry.isDeleted else { return }
+        entry.text = text
+        entry.rawText = rawText == text ? nil : rawText
+        entry.destination = lastDestination
+        entry.promptName = promptName
+        modelContext.saveOrLog()
+    }
+
     /// Throw away an in-flight recording without producing any text.
-    func cancel() async {
+    ///
+    /// - Parameter quietly: Skip the stop sound, for a recording the user never meant
+    ///   to start, such as one begun by Globe pressed as part of Fn+Delete.
+    func cancel(quietly: Bool = false) async {
         if let startTask { await startTask.value }
-        guard isRecording else { return }
+        // Not while a stop is delivering: its words are already on their way.
+        guard isRecording, !isDelivering else { return }
         maxDurationTask?.cancel()
         maxDurationTask = nil
 
@@ -385,12 +542,16 @@ final class RecordingCoordinator {
         overlay.hide()
         #endif
 
+        prefixWarmer?.cancel()
+        prefixWarmer = nil
         engine.cancelRecording(owner: .dictation)
         aiProcessor.discardPrewarm()
         skipAIOnce = false
         lastDestination = nil
-        AudioFeedbackService.shared.playIfEnabled(.recordingStopped, settings: settings)
-        Log.dictation.notice("Recording cancelled")
+        if !quietly {
+            AudioFeedbackService.shared.playIfEnabled(.recordingStopped, settings: settings)
+        }
+        Log.dictation.notice("Recording cancelled\(quietly ? " — Globe was used as a modifier" : "", privacy: .public)")
     }
 
     // MARK: - Output
@@ -428,6 +589,31 @@ final class RecordingCoordinator {
             lastDestination = "Clipboard"
         }
         #endif
+    }
+
+    /// Keep the warmed AI session reading along as the recognizer confirms words.
+    ///
+    /// Once a second, and only when a real stretch has been added, since each warming
+    /// reads the whole prefix again. Word replacements are applied exactly as they
+    /// will be at release, so the prefix matches the request character for character.
+    private func startPrefixWarmer() {
+        prefixWarmer?.cancel()
+        let promptId = effectivePromptId
+        prefixWarmer = Task { [weak self] in
+            var warmedLength = 0
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(1))
+                guard let self, self.isRecording, !Task.isCancelled else { return }
+                let confirmed = self.engine.currentTranscript
+                guard confirmed.count >= warmedLength + 40 else { continue }
+                warmedLength = confirmed.count
+                self.aiProcessor.warmPrefix(
+                    promptId: promptId,
+                    transcriptSoFar: TextProcessor.process(confirmed, replacements: self.settings.wordReplacements),
+                    surroundingText: self.surroundingText
+                )
+            }
+        }
     }
 
     #if os(macOS)

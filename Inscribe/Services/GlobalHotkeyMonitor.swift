@@ -44,6 +44,9 @@ private let relevantModifiers: CGEventFlags = [
 /// What a tapped keystroke turned out to mean.
 private enum HotkeyAction: Sendable {
     case activate, deactivate, toggle, cancel, undo
+    /// The Globe key turned out to be a modifier for another key, so the recording it
+    /// started was never meant. Cancelled without the stop sound.
+    case abandon
     /// The settings screen is waiting for a new binding, and this was the keystroke.
     case capture(keyCode: CGKeyCode, modifiers: CGEventFlags)
 }
@@ -57,6 +60,12 @@ private struct TapState: Sendable {
     var isRecording = false
     var isKeyDown = false
     var isCapturing = false
+    /// Another key went down while Globe was held: Fn+Delete, Fn+arrow, a Globe
+    /// shortcut. The release that follows must not act as a dictation's release.
+    var globeUsedAsModifier = false
+    /// Whether this Globe press started a recording rather than stopped one. Only a
+    /// start can be taken back when the press turns out to be a modifier.
+    var pressStartedRecording = false
 }
 
 /// System-wide hotkey monitor built on a CGEventTap.
@@ -140,6 +149,9 @@ final class GlobalHotkeyMonitor {
     var onCancel: (() -> Void)?
     /// The undo shortcut was pressed.
     var onUndo: (() -> Void)?
+    /// A recording started by the Globe key should be dropped quietly: the key was
+    /// being used as a modifier.
+    var onAbandon: (() -> Void)?
     /// A keystroke arrived while the settings screen was recording a new binding.
     var onCapture: ((CGKeyCode, CGEventFlags) -> Void)?
 
@@ -171,7 +183,10 @@ final class GlobalHotkeyMonitor {
     /// starts before returning, so `host` is still nil when it lands. Re-enabling
     /// through `host` dropped that first call and the tap stayed dead for the life of
     /// the app, while `isRunning` went on reporting it as listening.
-    @ObservationIgnored nonisolated(unsafe) private var tapPort: CFMachPort?
+    ///
+    /// Read on the tap's thread and replaced on the main thread, so it lives behind a
+    /// lock.
+    private let tapPort = OSAllocatedUnfairLock<CFMachPort?>(uncheckedState: nil)
 
     // MARK: - Lifecycle
 
@@ -199,7 +214,7 @@ final class GlobalHotkeyMonitor {
         emit.finish()
         pump?.cancel()
         host?.invalidate()
-        tapPort = nil
+        tapPort.withLockUnchecked { $0 = nil }
     }
 
     // MARK: - Public API
@@ -248,8 +263,21 @@ final class GlobalHotkeyMonitor {
 
         // Assigned before the host exists, so the thread the host starts can always
         // find it.
-        tapPort = tap
-        host = TapHost(tap: tap)
+        tapPort.withLockUnchecked { $0 = tap }
+        let host = TapHost(tap: tap)
+        self.host = host
+
+        // A tap can be created and still never switch on — after a reinstall, the
+        // Accessibility grant belongs to the old binary — and it then hears nothing.
+        // This used to report "Listening" regardless, and since every retry only runs
+        // when the monitor says it is not running, nothing ever rebuilt it.
+        guard host.waitUntilEnabled() else {
+            Self.log.error("tap never switched on — Accessibility is probably not granted to this build")
+            stop()
+            lastError = "The hotkey could not switch on. In System Settings → Privacy & Security → Accessibility, remove Inscribe and add it again."
+            return false
+        }
+
         isRunning = true
         lastError = nil
         Self.log.notice("tap installed, trigger=\(String(describing: self.trigger), privacy: .public), mode=\(self.activationMode.rawValue, privacy: .public), suppress=\(self.suppressTriggerKey, privacy: .public)")
@@ -260,7 +288,7 @@ final class GlobalHotkeyMonitor {
     func stop() {
         host?.invalidate()
         host = nil
-        tapPort = nil
+        tapPort.withLockUnchecked { $0 = nil }
         tapState.withLock { $0.isKeyDown = false }
         isRunning = false
     }
@@ -315,10 +343,16 @@ final class GlobalHotkeyMonitor {
                 if flags.contains(.maskSecondaryFn) {
                     guard !state.isKeyDown else { return (state.suppressTriggerKey, nil) }
                     state.isKeyDown = true
+                    state.globeUsedAsModifier = false
+                    state.pressStartedRecording = !state.isRecording
                     return (state.suppressTriggerKey, edge(pressed: true, mode: state.activationMode))
                 } else {
                     guard state.isKeyDown else { return (state.suppressTriggerKey, nil) }
                     state.isKeyDown = false
+                    if state.globeUsedAsModifier {
+                        state.globeUsedAsModifier = false
+                        return (state.suppressTriggerKey, nil)
+                    }
                     return (state.suppressTriggerKey, edge(pressed: false, mode: state.activationMode))
                 }
 
@@ -326,12 +360,24 @@ final class GlobalHotkeyMonitor {
                 // Escape abandons an in-flight recording without producing text.
                 if keyCode == escapeKeyCode, state.isRecording { return (true, .cancel) }
 
-                // Checked before the record trigger so the two can never collide.
+                // Any other key while Globe is held means Globe is a modifier — Fn+Delete,
+                // Fn+arrow keys, a Globe shortcut — and the recording its press started
+                // was never wanted. The key itself goes through to the app untouched.
+                // A press that stopped a toggle recording has already delivered it, so
+                // there is nothing to take back.
+                if case .globe = state.trigger, state.isKeyDown, !state.globeUsedAsModifier {
+                    state.globeUsedAsModifier = true
+                    let wasStart = state.activationMode == .pushToTalk || state.pressStartedRecording
+                    return (false, wasStart ? .abandon : nil)
+                }
+
+                // Checked before the record trigger so the two can never collide. The
+                // auto-repeat of a held undo shortcut is swallowed with it; letting it
+                // through sent the combination on to the app in front.
                 if case let .combo(undoKey, undoModifiers) = state.undoTrigger,
                    keyCode == undoKey,
-                   flags.intersection(relevantModifiers) == undoModifiers.intersection(relevantModifiers),
-                   !isRepeat {
-                    return (true, .undo)
+                   flags.intersection(relevantModifiers) == undoModifiers.intersection(relevantModifiers) {
+                    return (true, isRepeat ? nil : .undo)
                 }
 
                 guard case let .combo(triggerKey, triggerModifiers) = state.trigger,
@@ -375,11 +421,47 @@ final class GlobalHotkeyMonitor {
         } else {
             Self.log.notice("tap disabled by user input, re-enabling")
         }
-        guard let tapPort else {
+        guard let port = tapPort.withLockUnchecked({ $0 }) else {
             Self.log.error("no tap port to re-enable")
             return
         }
-        CGEvent.tapEnable(tap: tapPort, enable: true)
+        CGEvent.tapEnable(tap: port, enable: true)
+        if !CGEvent.tapIsEnabled(tap: port) {
+            Self.log.error("tap would not switch back on")
+        }
+
+        // A release that happened while the tap was off never arrived, which left the
+        // key marked as held: the next press was swallowed as a repeat, and the
+        // recording ran on until the release after that. Ask the hardware instead.
+        releaseIfKeyIsUp()
+    }
+
+    /// Send the release the tap missed, if the trigger key is no longer down.
+    private nonisolated func releaseIfKeyIsUp() {
+        let (trigger, held) = tapState.withLock { ($0.trigger, $0.isKeyDown) }
+        guard held else { return }
+
+        let isDown: Bool = switch trigger {
+        case .globe:
+            CGEventSource.flagsState(.combinedSessionState).contains(.maskSecondaryFn)
+        case let .combo(keyCode, _):
+            CGEventSource.keyState(.combinedSessionState, key: keyCode)
+        }
+        guard !isDown else { return }
+
+        let action = tapState.withLock { state -> HotkeyAction? in
+            guard state.isKeyDown else { return nil }
+            state.isKeyDown = false
+            if state.globeUsedAsModifier {
+                state.globeUsedAsModifier = false
+                return nil
+            }
+            return edge(pressed: false, mode: state.activationMode)
+        }
+        if let action {
+            Self.log.notice("trigger key was released while the tap was off — releasing now")
+            emit.yield(action)
+        }
     }
 
     // MARK: - Main Actor
@@ -406,6 +488,7 @@ final class GlobalHotkeyMonitor {
         case .toggle:
             onToggle?()
         case .cancel: onCancel?()
+        case .abandon: onAbandon?()
         case .undo: onUndo?()
         case let .capture(keyCode, modifiers): onCapture?(keyCode, modifiers)
         }
@@ -435,6 +518,8 @@ private final class TapHost: @unchecked Sendable {
     private let tap: CFMachPort
     private let lock = NSLock()
     private var loop: CFRunLoop?
+    private var enabled = false
+    private let ready = DispatchSemaphore(value: 0)
 
     init(tap: CFMachPort) {
         self.tap = tap
@@ -450,11 +535,12 @@ private final class TapHost: @unchecked Sendable {
             let source = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, tap, 0)
             CFRunLoopAddSource(loop, source, .commonModes)
             CGEvent.tapEnable(tap: tap, enable: true)
-            host.publish(loop)
+            let isEnabled = CGEvent.tapIsEnabled(tap: tap)
+            host.publish(loop, enabled: isEnabled)
 
             // The one line worth keeping: a tap that reports itself installed but not
-            // enabled receives nothing, and every screen still says "Listening".
-            GlobalHotkeyMonitor.log.notice("tap enabled=\(CGEvent.tapIsEnabled(tap: tap), privacy: .public)")
+            // enabled receives nothing.
+            GlobalHotkeyMonitor.log.notice("tap enabled=\(isEnabled, privacy: .public)")
 
             CFRunLoopRun()
 
@@ -477,10 +563,24 @@ private final class TapHost: @unchecked Sendable {
         CFMachPortInvalidate(tap)
     }
 
-    private func publish(_ loop: CFRunLoop) {
+    /// Whether the tap switched on, once its thread has tried.
+    ///
+    /// Blocks the caller for the few milliseconds the thread takes to start, and at
+    /// most half a second. A thread that has not answered by then counts as a tap
+    /// that did not switch on.
+    func waitUntilEnabled() -> Bool {
+        guard ready.wait(timeout: .now() + .milliseconds(500)) == .success else { return false }
         lock.lock()
         defer { lock.unlock() }
+        return enabled
+    }
+
+    private func publish(_ loop: CFRunLoop, enabled: Bool) {
+        lock.lock()
         self.loop = loop
+        self.enabled = enabled
+        lock.unlock()
+        ready.signal()
     }
 
     private func currentLoop() -> CFRunLoop? {

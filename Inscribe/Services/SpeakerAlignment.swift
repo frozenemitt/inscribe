@@ -22,7 +22,24 @@ enum SpeakerAlignment {
     /// Identifier used when the diarizer has no opinion about a stretch of speech.
     static let unknownSpeaker = "unknown"
 
-    /// Attribute each transcript run, then merge neighbours by the same speaker.
+    /// How far a word may sit from the nearest speaker turn and still be credited to it.
+    ///
+    /// The diarizer drops short stretches it takes for silence, and a word landing in
+    /// one of those still belongs to whoever was talking around it. A word further than
+    /// this from every turn sits in a stretch the diarizer failed on, such as a chunk
+    /// that threw, and crediting it to the nearest turn put a minute of speech in the
+    /// mouth of whoever happened to speak next.
+    private static let nearestTurnReach: TimeInterval = 2
+
+    /// A silence long enough to start a new utterance even when the speaker has not
+    /// changed.
+    ///
+    /// Without it, one person's lines either side of a long pause became one utterance,
+    /// and its single timestamp said nothing about when the later sentences were spoken.
+    private static let utteranceBreak: TimeInterval = 3
+
+    /// Attribute each transcript run, then merge neighbours by the same speaker unless
+    /// a long silence separates them.
     static func align(
         transcript: [TimedTranscriptSegment],
         turns: [SpeakerTurn]
@@ -45,10 +62,11 @@ enum SpeakerAlignment {
 
             // Extend the previous utterance when the speaker has not changed, so the
             // result reads as speech rather than a list of fragments.
-            if var last = merged.last, last.speakerId == speaker {
+            if var last = merged.last, last.speakerId == speaker,
+               run.start - last.end < utteranceBreak {
                 last = AlignedUtterance(
                     speakerId: speaker,
-                    text: last.text + run.text,
+                    text: joined(last.text, run.text),
                     start: last.start,
                     end: run.end
                 )
@@ -75,21 +93,43 @@ enum SpeakerAlignment {
         }
     }
 
+    /// Join two runs, putting back a space the transcriber left out.
+    ///
+    /// Runs inside one result carry their own leading space, but the first run of the
+    /// next result does not, so the last word of one result and the first of the next
+    /// were fused into one. A run that starts with punctuation is left attached.
+    private static func joined(_ first: String, _ second: String) -> String {
+        guard let end = first.last, let start = second.first,
+              !end.isWhitespace, start.isLetter || start.isNumber else {
+            return first + second
+        }
+        return first + " " + second
+    }
+
     /// Who was speaking at `time`.
     ///
-    /// Falls back to the nearest turn when nothing covers the instant: the diarizer
-    /// drops stretches it considers silence, and a word landing in one of those gaps
-    /// still belongs to whoever was talking around it.
+    /// When several turns cover the instant, as they do where people talk over each
+    /// other, the shortest wins. Taking the first to start credited the interjection to
+    /// whoever had been talking longest, which is exactly the person who did not say it.
+    ///
+    /// Falls back to the nearest turn when nothing covers the instant, as long as it is
+    /// within `nearestTurnReach`: the diarizer drops stretches it considers silence, and
+    /// a word landing in one of those gaps still belongs to whoever was talking around
+    /// it. Further away than that, the word is left unattributed.
     private static func speakerId(at time: TimeInterval, in turns: [SpeakerTurn]) -> String {
-        if let covering = turns.first(where: { $0.covers(time) }) {
-            return covering.speakerId
+        let covering = turns.filter { $0.covers(time) }
+        if let shortest = covering.min(by: { $0.end - $0.start < $1.end - $1.start }) {
+            return shortest.speakerId
         }
 
         let nearest = turns.min { first, second in
             distance(from: time, to: first) < distance(from: time, to: second)
         }
 
-        return nearest?.speakerId ?? unknownSpeaker
+        guard let nearest, distance(from: time, to: nearest) <= nearestTurnReach else {
+            return unknownSpeaker
+        }
+        return nearest.speakerId
     }
 
     private static func distance(from time: TimeInterval, to turn: SpeakerTurn) -> TimeInterval {

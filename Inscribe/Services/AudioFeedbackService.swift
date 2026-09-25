@@ -100,6 +100,9 @@ final class AudioFeedbackService {
 
     /// Stop the processing loop sound
     func stopProcessingLoop() {
+        // Named sounds can come back as one shared instance, so the loop flag set on
+        // it would stay set wherever that sound played next.
+        loopingSound?.loops = false
         loopingSound?.stop()
         loopingSound = nil
     }

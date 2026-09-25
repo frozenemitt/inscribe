@@ -1,4 +1,5 @@
 import SwiftUI
+import SwiftData
 import UniformTypeIdentifiers
 import Combine
 
@@ -98,6 +99,7 @@ struct SettingsView: View {
 struct GeneralSettingsView: View {
     @Environment(AppSettings.self) private var settings
     @Environment(PromptConfiguration.self) private var promptConfig
+    @Environment(\.modelContext) private var modelContext
     #if os(macOS)
     @Environment(GlobalHotkeyMonitor.self) private var hotkeyMonitor
     #endif
@@ -112,9 +114,18 @@ struct GeneralSettingsView: View {
                 Toggle("Enable AI Processing", isOn: $settings.aiEnabled)
 
                 if settings.aiEnabled {
+                    if let reason = AIProcessor.unavailabilityReason {
+                        Label(reason, systemImage: "exclamationmark.triangle")
+                            .font(.caption)
+                            .foregroundStyle(.orange)
+                    }
+
                     Picker("Default Prompt", selection: $settings.selectedPromptId) {
                         Text("Clean Up (Default)").tag(nil as UUID?)
-                        ForEach(promptConfig.prompts) { prompt in
+                        // The default prompt is already the "Clean Up (Default)" row
+                        // above; listing it again here under its own name duplicated
+                        // "Clean Up" in the picker.
+                        ForEach(promptConfig.prompts.filter { $0.id != PromptConfiguration.defaultPromptId }) { prompt in
                             Text(prompt.name).tag(prompt.id as UUID?)
                         }
                     }
@@ -142,6 +153,14 @@ struct GeneralSettingsView: View {
                     Stepper(value: $settings.dictationHistoryLimit, in: 10...500, step: 10) {
                         Text("Keep the last \(settings.dictationHistoryLimit)")
                             .monospacedDigit()
+                    }
+                    // Otherwise a lower limit only takes effect the next time a
+                    // dictation is recorded, since pruning normally happens as a
+                    // side effect of saving a new entry — which could be a long
+                    // wait for a setting the user just changed on purpose.
+                    .onChange(of: settings.dictationHistoryLimit) { _, newLimit in
+                        DictationHistory.prune(to: newLimit, in: modelContext)
+                        modelContext.saveOrLog()
                     }
                 }
 
@@ -500,8 +519,6 @@ struct PromptDetailView: View {
     @State private var samplingModeTag: String
     @State private var topPThreshold: Double
     @State private var topKValue: Int
-    @State private var limitResponseTokens: Bool
-    @State private var maxResponseTokens: Int
 
     init(
         prompt: Prompt,
@@ -534,8 +551,6 @@ struct PromptDetailView: View {
             self._topPThreshold = State(initialValue: 0.9)
             self._topKValue = State(initialValue: 10)
         }
-        self._limitResponseTokens = State(initialValue: prompt.maxResponseTokens != nil)
-        self._maxResponseTokens = State(initialValue: prompt.maxResponseTokens ?? 500)
     }
 
     var body: some View {
@@ -586,7 +601,7 @@ struct PromptDetailView: View {
                             .foregroundStyle(.secondary)
                             .monospacedDigit()
                     }
-                    Slider(value: $temperature, in: 0.0...2.0, step: 0.1)
+                    Slider(value: $temperature, in: 0.0...1.0, step: 0.1)
                     Text(temperatureHint)
                         .font(.caption2)
                         .foregroundStyle(.tertiary)
@@ -620,12 +635,6 @@ struct PromptDetailView: View {
                 if samplingModeTag == "topK" {
                     Stepper("Top K: \(topKValue)", value: $topKValue, in: 1...100)
                 }
-
-                Toggle("Limit response length", isOn: $limitResponseTokens)
-
-                if limitResponseTokens {
-                    Stepper("Max tokens: \(maxResponseTokens)", value: $maxResponseTokens, in: 50...2000, step: 50)
-                }
             }
 
             if hasUnsavedChanges {
@@ -642,13 +651,12 @@ struct PromptDetailView: View {
                                 // prompt wholesale, so anything left out is reset.
                                 isVisible: prompt.isVisible,
                                 temperature: temperature,
-                                samplingMode: currentSamplingMode,
-                                maxResponseTokens: limitResponseTokens ? maxResponseTokens : nil
+                                samplingMode: currentSamplingMode
                             )
                             onSave(updated)
                         }
                         if hasGenerationChanges {
-                            onSaveGenerationSettings?(temperature, currentSamplingMode, limitResponseTokens ? maxResponseTokens : nil)
+                            onSaveGenerationSettings?(temperature, currentSamplingMode, nil)
                         }
                     }
                     .buttonStyle(.borderedProminent)
@@ -664,8 +672,7 @@ struct PromptDetailView: View {
                             userTemplate: userTemplate,
                             isBuiltIn: false,
                             temperature: temperature,
-                            samplingMode: currentSamplingMode,
-                            maxResponseTokens: limitResponseTokens ? maxResponseTokens : nil
+                            samplingMode: currentSamplingMode
                         )
                         onDuplicate(duplicate)
                     } label: {
@@ -694,8 +701,6 @@ struct PromptDetailView: View {
             case .topK(let k): topKValue = k
             default: break
             }
-            limitResponseTokens = newPrompt.maxResponseTokens != nil
-            maxResponseTokens = newPrompt.maxResponseTokens ?? 500
         }
     }
 
@@ -712,8 +717,7 @@ struct PromptDetailView: View {
     private var temperatureHint: String {
         if temperature < 0.3 { return "Very predictable" }
         if temperature < 0.7 { return "Balanced" }
-        if temperature < 1.2 { return "Creative" }
-        return "Highly creative"
+        return "Creative"
     }
 
     private var samplingHint: String {
@@ -737,8 +741,7 @@ struct PromptDetailView: View {
 
     private var hasGenerationChanges: Bool {
         temperature != prompt.temperature ||
-        currentSamplingMode != prompt.samplingMode ||
-        (limitResponseTokens ? maxResponseTokens : nil) != prompt.maxResponseTokens
+        currentSamplingMode != prompt.samplingMode
     }
 }
 
@@ -752,8 +755,6 @@ struct AddPromptSheet: View {
     @State private var samplingModeTag = "automatic"
     @State private var topPThreshold = 0.9
     @State private var topKValue = 10
-    @State private var limitResponseTokens = false
-    @State private var maxResponseTokens = 500
 
     let onAdd: (Prompt) -> Void
 
@@ -806,7 +807,7 @@ struct AddPromptSheet: View {
                             .foregroundStyle(.secondary)
                             .monospacedDigit()
                     }
-                    Slider(value: $temperature, in: 0.0...2.0, step: 0.1)
+                    Slider(value: $temperature, in: 0.0...1.0, step: 0.1)
                 }
 
                 Picker("Sampling", selection: $samplingModeTag) {
@@ -837,12 +838,6 @@ struct AddPromptSheet: View {
                 if samplingModeTag == "topK" {
                     Stepper("Top K: \(topKValue)", value: $topKValue, in: 1...100)
                 }
-
-                Toggle("Limit response length", isOn: $limitResponseTokens)
-
-                if limitResponseTokens {
-                    Stepper("Max tokens: \(maxResponseTokens)", value: $maxResponseTokens, in: 50...2000, step: 50)
-                }
             }
         }
         .formStyle(.grouped)
@@ -861,8 +856,7 @@ struct AddPromptSheet: View {
                         systemPrompt: systemPrompt,
                         userTemplate: userTemplate,
                         temperature: temperature,
-                        samplingMode: currentSamplingMode,
-                        maxResponseTokens: limitResponseTokens ? maxResponseTokens : nil
+                        samplingMode: currentSamplingMode
                     )
                     onAdd(prompt)
                     dismiss()
@@ -1008,14 +1002,17 @@ struct SoundsSettingsView: View {
 
     private func deleteSound(_ id: String) {
         do {
-            // Reset any settings that reference this sound back to default
+            try soundCatalog.deleteCustomSound(id: id)
+
+            // Reset any settings that reference this sound back to default, now
+            // that the file is actually gone — resetting first meant a failed
+            // delete still stranded the user's sound choice on a file that was
+            // never removed.
             if settings.startSoundName == id { settings.startSoundName = "Morse" }
             if settings.stopSoundName == id { settings.stopSoundName = "Pop" }
             if settings.completeSoundName == id { settings.completeSoundName = "Glass" }
             if settings.errorSoundName == id { settings.errorSoundName = "Basso" }
             if settings.processingSoundName == id { settings.processingSoundName = "Bottle" }
-
-            try soundCatalog.deleteCustomSound(id: id)
         } catch {
             importError = "Failed to delete: \(error.localizedDescription)"
         }
@@ -1129,6 +1126,15 @@ struct HotkeySettingsView: View {
             }
         }
         .formStyle(.grouped)
+        .onAppear {
+            // The status message says to grant access "and try again" — this is
+            // that retry. Trust may already have been granted in a System
+            // Settings visit that started before this tab was even open, in
+            // which case the poll below never sees a change to react to.
+            if !hotkeyMonitor.isRunning, AccessibilityPermission.isTrusted {
+                hotkeyMonitor.start()
+            }
+        }
         .onReceive(trustPoll) { _ in
             let current = AccessibilityPermission.isTrusted
             guard current != isTrusted else { return }
@@ -1243,6 +1249,15 @@ struct HotkeySettingsView: View {
                 // Stay armed and say why, rather than swallowing the keystroke and
                 // leaving the user pressing keys at a screen that never answers.
                 captureError = "That one cannot be a hotkey. Use a letter, number or punctuation key with at least two of ⌃, ⌥ and ⌘."
+                return
+            }
+
+            // The undo shortcut is checked first, so a dictation binding equal to
+            // it would never fire — the Globe key's own default, ⌃⌥⌘Z, is also
+            // undo's default, and recording it here would silently disable
+            // dictation rather than bind it.
+            if settings.undoHotkeyEnabled, combination == settings.undoHotkeyString {
+                captureError = "\(combination) is already the undo shortcut. Choose a different combination, or turn undo off first."
                 return
             }
 
@@ -1442,7 +1457,23 @@ struct AboutSettingsView: View {
     }
 
     private func reload() {
-        entries = (try? Diagnostics.recent()) ?? []
+        // Diagnostics.recent() walks the unified log, which can take real time on
+        // a busy run — off the main actor so opening this disclosure group does
+        // not stall the rest of the Settings window while it works.
+        Task {
+            let fetched = await Task.detached(priority: .utility) {
+                (try? Diagnostics.recent()) ?? []
+            }.value
+            entries = fetched
+        }
+    }
+
+    /// Read from the bundle rather than hard-coded, so this stops matching
+    /// reality the moment the app ships a new version.
+    private var appVersionText: String {
+        let shortVersion = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "—"
+        let build = Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "—"
+        return "Version \(shortVersion) (\(build))"
     }
 
     @State private var entries: [Diagnostics.Entry] = []
@@ -1464,7 +1495,7 @@ struct AboutSettingsView: View {
                 .font(.headline)
                 .foregroundStyle(.secondary)
 
-            Text("Version 1.0.0")
+            Text(appVersionText)
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
 
@@ -1581,16 +1612,22 @@ struct DictationSettingsView: View {
             }
 
             Section("Word Replacements") {
-                Text("Applied after transcription, whole words only and ignoring case — so a rule for \"vox\" leaves \"voxel\" alone.")
+                Text("Applied after transcription, whole words only and ignoring case — so a rule for \"vox\" leaves \"voxel\" alone. Leave the written word blank to delete the heard word instead of replacing it.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+
+                if hasDuplicateReplacements {
+                    Label("Two rows have the same heard word — only one of them will be applied.", systemImage: "exclamationmark.triangle")
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                }
 
                 ForEach($replacements) { $row in
                     HStack {
                         TextField("heard", text: $row.spoken)
                         Image(systemName: "arrow.right")
                             .foregroundStyle(.secondary)
-                        TextField("written", text: $row.written)
+                        TextField("written (blank deletes)", text: $row.written)
                         Button {
                             replacements.removeAll { $0.id == row.id }
                             commitReplacements()
@@ -1624,13 +1661,27 @@ struct DictationSettingsView: View {
             .map { ReplacementRow(spoken: $0.key, written: $0.value) }
     }
 
-    /// Rebuild the stored dictionary from the rows, dropping half-finished ones.
+    /// Whether two rows share a heard word, ignoring case the way matching itself
+    /// does. `commitReplacements` below can only keep one value per key, so this is
+    /// the one thing about the list a row-by-row glance would not show: the other
+    /// row is not saved, and nothing else says so.
+    private var hasDuplicateReplacements: Bool {
+        let spokenWords = replacements
+            .map { $0.spoken.trimmingCharacters(in: .whitespaces).lowercased() }
+            .filter { !$0.isEmpty }
+        return Set(spokenWords).count != spokenWords.count
+    }
+
+    /// Rebuild the stored dictionary from the rows, dropping only rows with no
+    /// heard word to match. A blank written word is kept rather than dropped: it
+    /// means "delete this word" rather than "do nothing", and TextProcessor
+    /// already treats an empty replacement that way.
     private func commitReplacements() {
         var result: [String: String] = [:]
         for row in replacements {
             let spoken = row.spoken.trimmingCharacters(in: .whitespaces)
             let written = row.written.trimmingCharacters(in: .whitespaces)
-            guard !spoken.isEmpty, !written.isEmpty else { continue }
+            guard !spoken.isEmpty else { continue }
             result[spoken] = written
         }
         settings.wordReplacements = result
@@ -1867,7 +1918,7 @@ struct DiarizationModelsSection: View {
                     } else {
                         // Always reachable: a check that reports a problem must leave
                         // the user something to press.
-                        Button(isUpdating ? "Removing..." : "Re-download Models") { update() }
+                        Button(isUpdating ? "Downloading..." : "Re-download Models") { update() }
                             .disabled(isChecking || isUpdating)
                     }
                 }
@@ -1876,7 +1927,7 @@ struct DiarizationModelsSection: View {
                     resultLabel(checkResult)
                 }
 
-                Text("Checking verifies every installed file against the content hash HuggingFace publishes — SHA-256 for model weights, git blob hashes for the rest. No audio or transcript leaves your Mac; it reads public metadata only. Re-downloading removes the local copies so the next meeting fetches them fresh.")
+                Text("Checking verifies every installed file against the content hash HuggingFace publishes — SHA-256 for model weights, git blob hashes for the rest. No audio or transcript leaves your Mac; it reads public metadata only. Re-downloading fetches fresh copies now and replaces the local ones; if the download fails, the current copies stay.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -2034,21 +2085,21 @@ struct DiarizationModelsSection: View {
         }
     }
 
-    /// Remove the local copies so the next meeting fetches fresh ones.
+    /// Replace the local copies with fresh ones, now.
     ///
-    /// Deleting rather than overwriting: FluidAudio skips any file already on disk, so
-    /// a stale copy would survive a re-download untouched.
+    /// This used to remove them and leave the fetch to the next meeting, which is not
+    /// allowed to download, so that meeting recorded without speakers.
     private func update() {
         isUpdating = true
 
         Task {
             do {
-                try DiarizationModelStore.removeLocalCopies()
+                try await DiarizationModelStore.reinstall()
                 checkResult = nil
-                refresh()
             } catch {
                 checkResult = .failed(error.localizedDescription)
             }
+            refresh()
             isUpdating = false
         }
     }
@@ -2065,6 +2116,10 @@ struct MeetingAudioSection: View {
     @State private var permissionChecked = false
     @State private var hasPermission = false
 
+    /// Disk used by saved recordings, measured once when the section appears. Read in
+    /// the body, it listed the recordings folder twice on every redraw.
+    @State private var recordingsSize: Int64 = 0
+
     var body: some View {
         @Bindable var settings = settings
 
@@ -2075,8 +2130,8 @@ struct MeetingAudioSection: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
 
-            if MeetingAudioStore.totalSize() > 0 {
-                Text("Recordings currently use \(MeetingAudioStore.formatted(bytes: MeetingAudioStore.totalSize())).")
+            if recordingsSize > 0 {
+                Text("Recordings currently use \(MeetingAudioStore.formatted(bytes: recordingsSize)).")
                     .font(.caption)
                     .foregroundStyle(.tertiary)
             }
@@ -2119,6 +2174,7 @@ struct MeetingAudioSection: View {
                     .foregroundStyle(.orange)
             }
         }
+        .onAppear { recordingsSize = MeetingAudioStore.totalSize() }
     }
 }
 #endif

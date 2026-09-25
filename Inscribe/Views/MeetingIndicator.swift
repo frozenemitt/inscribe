@@ -53,10 +53,13 @@ final class MeetingIndicatorController {
         panel?.orderFrontRegardless()
     }
 
-    func update(spectrum: [Double], seconds: TimeInterval, isPaused: Bool) {
+    func update(spectrum: [Double], seconds: TimeInterval, isPaused: Bool, error: String?) {
         model.spectrum = spectrum
         model.isPaused = isPaused
         model.seconds = seconds
+        if model.error != error {
+            model.error = error
+        }
         model.contentOpacity = settings.overlayContentOpacity
         applyTint()
     }
@@ -210,6 +213,10 @@ final class MeetingIndicatorModel {
     var seconds: TimeInterval = 0
     var contentOpacity: Double = 1.0
 
+    /// What has gone wrong in the meeting, if anything. The panel is often the only
+    /// part of Inscribe on screen during a call, so a problem has to show here too.
+    var error: String?
+
     /// Handed in by the controller so the buttons can reach the meeting.
     var pauseOrResume: () -> Void = {}
     var stop: () -> Void = {}
@@ -234,6 +241,15 @@ private struct MeetingIndicatorView: View {
                 Text(clock)
                     .font(.caption.monospacedDigit())
                     .foregroundStyle(.primary)
+
+                // A mark rather than the message: the panel is too small to hold one.
+                // The words are in its tooltip and in the meeting window.
+                if let error = model.error {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                        .help(error)
+                }
 
                 Spacer(minLength: 0)
 

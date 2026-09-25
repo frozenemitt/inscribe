@@ -59,7 +59,7 @@ final class FileTranscriber {
             let audioFile = try AVAudioFile(forReading: fileURL)
 
             let transcriber = SpeechTranscriber(
-                locale: TranscriptionEngine.defaultLocale,
+                locale: try await Self.resolveLocale(),
                 transcriptionOptions: [],
                 reportingOptions: [],
                 attributeOptions: [.audioTimeRange]
@@ -122,6 +122,34 @@ final class FileTranscriber {
         state = .idle
         transcript = ""
         timedSegments = []
+    }
+
+    // MARK: - Locale
+
+    /// The locales the live engine tries, in its order.
+    ///
+    /// A copy of `TranscriptionEngine`'s own list, which is private to it. Imports used
+    /// en-US whether or not this Mac could transcribe it, while dictation fell back
+    /// through the list; the two now choose alike. Keep the lists in step.
+    private static let fallbackLocales = [
+        Locale(components: .init(languageCode: .english, script: nil, languageRegion: .unitedStates)),
+        Locale(components: .init(languageCode: .english, script: nil, languageRegion: .unitedKingdom)),
+        Locale(identifier: "en-US"),
+        Locale(identifier: "en"),
+        Locale.current
+    ]
+
+    /// The first locale in `fallbackLocales` this Mac can transcribe, found the way the
+    /// live engine finds it.
+    private static func resolveLocale() async throws -> Locale {
+        let supported = await SpeechTranscriber.supportedLocales
+
+        for candidate in fallbackLocales
+        where supported.contains(where: { $0.identifier(.bcp47) == candidate.identifier(.bcp47) }) {
+            return candidate
+        }
+
+        throw TranscriptionEngineError.localeNotSupported
     }
 }
 

@@ -16,16 +16,23 @@ enum TextProcessor {
 
     /// Case-insensitive whole-word substitution.
     ///
-    /// Whole-word only, so a replacement for "vox" cannot corrupt "voxel".
+    /// Whole-word only, so a replacement for "vox" cannot corrupt "voxel". The edges
+    /// are "no letter or digit next to it" rather than `\b`, which needs a letter or
+    /// digit at each end and so never matched a term like "C++" or ".NET".
     private static func applyReplacements(_ replacements: [String: String], to text: String) -> String {
         var result = text
 
         // Longest source first, so a more specific phrase wins over a prefix of itself.
-        for (source, replacement) in replacements.sorted(by: { $0.key.count > $1.key.count }) {
+        // Equal lengths go alphabetically: a dictionary's own order changes from one
+        // launch to the next, and so did the result of two replacements that chain.
+        let ordered = replacements.sorted {
+            $0.key.count != $1.key.count ? $0.key.count > $1.key.count : $0.key < $1.key
+        }
+        for (source, replacement) in ordered {
             let trimmed = source.trimmingCharacters(in: .whitespaces)
             guard !trimmed.isEmpty else { continue }
 
-            let pattern = "\\b\(NSRegularExpression.escapedPattern(for: trimmed))\\b"
+            let pattern = "(?<![\\p{L}\\p{N}_])\(NSRegularExpression.escapedPattern(for: trimmed))(?![\\p{L}\\p{N}_])"
             guard let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]) else {
                 continue
             }
