@@ -75,8 +75,7 @@ enum TextInsertionService {
                 log.notice("The app that received the text is gone; not undoing")
                 return nil
             }
-            target.activate()
-            try? await Task.sleep(for: .milliseconds(200))
+            await bringForward(target)
 
             // ⌘Z goes to whatever is in front. If macOS refused the activation, it
             // would undo the user's last edit in some other app.
@@ -151,8 +150,8 @@ enum TextInsertionService {
     ///
     /// - Parameters:
     ///   - text: The transcribed text.
-    ///   - targetApp: The app that was frontmost when recording began. Both the
-    ///     re-activation target and the app we ask about focus.
+    ///   - targetApp: The app the text is for: the one in front when the text is
+    ///     ready, or the one before Inscribe when Inscribe is in front.
     ///   - restoreClipboard: Put the previous clipboard contents back after pasting.
     ///   - autoSubmit: Press a Return key after inserting.
     ///   - submitUsesShift: Send Shift+Return instead of Return, so chat apps add a
@@ -472,7 +471,8 @@ enum TextInsertionService {
 
     // MARK: - Focus Restoration
 
-    /// Bring `targetApp` back to the front if something else stole focus mid-recording.
+    /// Bring `targetApp` to the front when it is not there. The coordinator aims at the
+    /// app in front, so this happens only when Inscribe itself was in front.
     private static func restoreFocusIfNeeded(to targetApp: NSRunningApplication?) async {
         guard let targetApp, !targetApp.isTerminated else { return }
 
@@ -480,12 +480,21 @@ enum TextInsertionService {
         guard frontmost?.processIdentifier != targetApp.processIdentifier else { return }
 
         log.debug("""
-            Focus moved to \(frontmost?.localizedName ?? "nothing", privacy: .public), \
-            reactivating \(targetApp.localizedName ?? "target", privacy: .public)
+            \(frontmost?.localizedName ?? "Nothing", privacy: .public) is in front, \
+            activating \(targetApp.localizedName ?? "target", privacy: .public)
             """)
-        targetApp.activate()
-        // Activation is asynchronous; the focused element is stale until it lands.
-        try? await Task.sleep(for: .milliseconds(200))
+        await bringForward(targetApp)
+    }
+
+    /// Activate `app` and return once macOS has put it in front, or after half a second.
+    /// Activation lands after the call returns, and until it does the focused element
+    /// is stale and a keystroke goes to the wrong app.
+    private static func bringForward(_ app: NSRunningApplication) async {
+        app.activate()
+        for _ in 0..<50 {
+            if NSWorkspace.shared.frontmostApplication?.processIdentifier == app.processIdentifier { return }
+            try? await Task.sleep(for: .milliseconds(10))
+        }
     }
 
     // MARK: - Synthetic Keystrokes
