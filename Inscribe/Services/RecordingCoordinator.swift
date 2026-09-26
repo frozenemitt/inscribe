@@ -175,17 +175,13 @@ final class RecordingCoordinator {
     }
 
     #if os(macOS)
-    /// The output mode to use, honouring any per-app override.
-    private var effectiveOutputMode: OutputMode {
-        if let raw = activeProfile?.outputModeRaw, let mode = OutputMode(rawValue: raw) {
-            return mode
-        }
-        return settings.outputMode
-    }
-
-    /// Whether to press Return afterwards, honouring any per-app override.
-    private var effectiveAutoSubmit: Bool {
-        activeProfile?.autoSubmit ?? settings.autoSubmitAfterInsert
+    /// The app in front, or the one before it when that is Inscribe itself: a click on
+    /// Inscribe's menu brings Inscribe forward, and the text is never meant for it.
+    private var appInFront: NSRunningApplication? {
+        let frontmost = NSWorkspace.shared.frontmostApplication
+        return frontmost?.processIdentifier == ProcessInfo.processInfo.processIdentifier
+            ? lastExternalApp
+            : frontmost
     }
     #endif
 
@@ -242,12 +238,10 @@ final class RecordingCoordinator {
 
         #if os(macOS)
         // Captured before we touch anything, so a menu bar click that steals focus
-        // does not redirect the text to Inscribe itself. When Inscribe is already in
-        // front, the text belongs to the app the user was in before it.
-        let frontmost = NSWorkspace.shared.frontmostApplication
-        targetApp = frontmost?.processIdentifier == ProcessInfo.processInfo.processIdentifier
-            ? lastExternalApp
-            : frontmost
+        // does not redirect the text to Inscribe itself. This app decides the prompt
+        // and the text around the cursor, both readied while the user talks; the text
+        // itself goes to whichever app is in front when it is ready.
+        targetApp = appInFront
         activeProfile = settings.profile(forBundleIdentifier: targetApp?.bundleIdentifier)
 
         if let activeProfile {
@@ -581,7 +575,15 @@ final class RecordingCoordinator {
         // leaving it up while text lands is visual noise at the wrong moment.
         overlay.hide()
 
-        switch effectiveOutputMode {
+        // The app in front now, not the one the dictation began in: switching to the
+        // app the text is for while still talking is normal. Its profile decides how
+        // the text arrives.
+        let destination = appInFront
+        let profile = settings.profile(forBundleIdentifier: destination?.bundleIdentifier)
+        let outputMode = profile?.outputModeRaw.flatMap(OutputMode.init(rawValue:)) ?? settings.outputMode
+        let autoSubmit = profile?.autoSubmit ?? settings.autoSubmitAfterInsert
+
+        switch outputMode {
         case .clipboardOnly:
             ClipboardService.copy(text)
             lastDestination = "Clipboard"
@@ -589,11 +591,11 @@ final class RecordingCoordinator {
         case .smartInsert:
             let outcome = await TextInsertionService.deliver(
                 text,
-                targetApp: targetApp,
+                targetApp: destination,
                 restoreClipboard: settings.restoreClipboardAfterPaste,
-                autoSubmit: effectiveAutoSubmit,
+                autoSubmit: autoSubmit,
                 submitUsesShift: settings.useShiftReturnAfterInsert,
-                addSpace: settings.addSpaceAfterInsert && !effectiveAutoSubmit
+                addSpace: settings.addSpaceAfterInsert && !autoSubmit
             )
             switch outcome {
             case .inserted(let appName):
